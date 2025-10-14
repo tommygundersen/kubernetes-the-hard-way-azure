@@ -1,0 +1,27 @@
+# Example terraform.tfvars file
+# Copy this file to terraform.tfvars and customize the values for your deployment
+
+# Azure Configuration
+location = "swedencentral"
+
+# Virtual Machine Configuration
+vm_size = "Standard_B2s"  # Cost-effective for labs, upgrade to B4ms for better performance
+
+# Authentication
+admin_username = "azureuser"
+# ssh_public_key_path = "~/.ssh/id_rsa.pub"  # Uncomment and set path to use existing SSH key
+
+# Student Information (optional)
+student_name = "student01"
+environment  = "lab"
+
+# Cost Management
+auto_shutdown_enabled  = true
+auto_shutdown_time     = "1900"  # 7:00 PM
+auto_shutdown_timezone = "UTC"
+
+# Performance (set to true for supported VM sizes like Standard_D2s_v3 or larger)
+enable_accelerated_networking = false
+
+# Kubernetes Version (for reference)
+kubernetes_version = "1.28.0"
