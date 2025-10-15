@@ -3,6 +3,21 @@
 # Kubernetes the Hard Way - Automated Setup Script
 # This script automatically configures the entire Kubernetes cluster
 # Use this for testing the infrastructure or when you need a quick setup
+# 
+# Updated with all fixes from chapters 01-07 including:
+# - Kubernetes v1.28.0 and latest component versions
+# - Automatic cgroup v1/v2 detection and configuration
+# - Fixed etcd variable expansion issues
+# - Enhanced Azure hostname handling
+# - Cross-node pod networking support
+# - Improved error handling and logging
+#
+# Prerequisites:
+# - Infrastructure provisioned via Terraform
+# - SSH keys configured
+# - Certificates generated (chapter 02)
+# - Kubeconfig files created (chapter 03)  
+# - Encryption config prepared (chapter 04)
 
 set -e
 
@@ -29,25 +44,92 @@ header() {
     echo -e "\n${BLUE}=== $1 ===${NC}"
 }
 
-# Load environment variables
-if [ -f ~/k8s-env.sh ]; then
-    source ~/k8s-env.sh
-else
-    error "Environment file ~/k8s-env.sh not found. Run prerequisites first."
-    exit 1
-fi
-
-# Configuration
+# Configuration (updated versions)
 KUBERNETES_VERSION="v1.28.0"
 ETCD_VERSION="v3.5.9"
 CONTAINERD_VERSION="1.7.2"
 CNI_VERSION="v1.3.0"
+CFSSL_VERSION="1.6.4"
+RUNC_VERSION="v1.1.8"
+CRICTL_VERSION="v1.28.0"
+
+# Infrastructure IPs
+CONTROL_PLANE_IP="10.0.3.10"
+WORKER_1_IP="10.0.3.20"
+WORKER_2_IP="10.0.3.21"
+
+# Infrastructure IPs
+CONTROL_PLANE_IP="10.0.3.10"
+WORKER_1_IP="10.0.3.20"
+WORKER_2_IP="10.0.3.21"
 
 header "Kubernetes the Hard Way - Automated Setup"
 log "This script will automatically configure the entire Kubernetes cluster"
 log "Infrastructure should already be provisioned and SSH access configured"
+log "Updated with cgroup v2 support and latest component versions"
 
 # Verify SSH connectivity
+header "Verifying SSH Connectivity"
+for ip in $CONTROL_PLANE_IP $WORKER_1_IP $WORKER_2_IP; do
+    log "Testing SSH connection to $ip..."
+    if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no azureuser@$ip "echo 'SSH OK'" > /dev/null 2>&1; then
+        log "✓ SSH connection to $ip successful"
+    else
+        error "✗ Cannot connect to $ip via SSH"
+        exit 1
+    fi
+done
+
+# Check if certificates already exist
+header "Checking Prerequisites"
+if [ ! -f ca.pem ]; then
+    error "Certificates not found. Please run chapter 02 (Certificate Authority) first."
+    exit 1
+fi
+
+if [ ! -f admin.kubeconfig ]; then
+    error "Kubeconfig files not found. Please run chapter 03 (Kubernetes Configuration Files) first."
+    exit 1
+fi
+
+if [ ! -f encryption-config.yaml ]; then
+    error "Encryption config not found. Please run chapter 04 (Data Encryption Keys) first."
+    exit 1
+fi
+
+log "✓ All prerequisites found"
+
+# Function to execute commands on remote hosts
+execute_on_host() {
+    local host=$1
+    local commands=$2
+    local description=$3
+    
+    log "Executing on $host: $description"
+    ssh -o StrictHostKeyChecking=no azureuser@$host "$commands"
+    if [ $? -eq 0 ]; then
+        log "✓ Completed on $host: $description"
+    else
+        error "✗ Failed on $host: $description"
+        exit 1
+    fi
+}
+
+# Function to copy files to remote hosts
+copy_to_host() {
+    local host=$1
+    local files=$2
+    local description=$3
+    
+    log "Copying to $host: $description"
+    scp -o StrictHostKeyChecking=no $files azureuser@$host:~/
+    if [ $? -eq 0 ]; then
+        log "✓ Files copied to $host: $description"
+    else
+        error "✗ Failed to copy files to $host: $description"
+        exit 1
+    fi
+}
 log "Verifying SSH connectivity to all VMs..."
 for vm_ip in $CONTROL_PLANE_IP $WORKER_1_IP $WORKER_2_IP; do
     if ! ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no azureuser@$vm_ip 'echo "SSH OK"' >/dev/null 2>&1; then
@@ -479,7 +561,7 @@ Documentation=https://github.com/etcd
 [Service]
 Type=notify
 ExecStart=/usr/local/bin/etcd \\
-  --name ${ETCD_NAME} \\
+  --name \${ETCD_NAME} \\
   --cert-file=/etc/etcd/kubernetes.pem \\
   --key-file=/etc/etcd/kubernetes-key.pem \\
   --peer-cert-file=/etc/etcd/kubernetes.pem \\
@@ -488,12 +570,12 @@ ExecStart=/usr/local/bin/etcd \\
   --peer-trusted-ca-file=/etc/etcd/ca.pem \\
   --peer-client-cert-auth \\
   --client-cert-auth \\
-  --initial-advertise-peer-urls https://${INTERNAL_IP}:2380 \\
-  --listen-peer-urls https://${INTERNAL_IP}:2380 \\
-  --listen-client-urls https://${INTERNAL_IP}:2379,https://127.0.0.1:2379 \\
-  --advertise-client-urls https://${INTERNAL_IP}:2379 \\
+  --initial-advertise-peer-urls https://\${INTERNAL_IP}:2380 \\
+  --listen-peer-urls https://\${INTERNAL_IP}:2380 \\
+  --listen-client-urls https://\${INTERNAL_IP}:2379,https://127.0.0.1:2379 \\
+  --advertise-client-urls https://\${INTERNAL_IP}:2379 \\
   --initial-cluster-token etcd-cluster-0 \\
-  --initial-cluster ${ETCD_NAME}=https://${INTERNAL_IP}:2380 \\
+  --initial-cluster \${ETCD_NAME}=https://\${INTERNAL_IP}:2380 \\
   --initial-cluster-state new \\
   --data-dir=/var/lib/etcd
 Restart=on-failure
@@ -681,7 +763,7 @@ sudo mkdir -p \\
 
 # Install OS dependencies
 sudo apt-get update
-sudo apt-get -y install socat conntrack ipset
+sudo apt-get -y install socat conntrack ipset iptables-persistent
 
 # Download worker binaries
 wget -q --show-progress --https-only --timestamping \\
@@ -740,18 +822,53 @@ cat <<EOC | sudo tee /etc/cni/net.d/99-loopback.conf
 }
 EOC
 
-# Configure containerd
+# Configure crictl
+sudo crictl config --set runtime-endpoint=unix:///run/containerd/containerd.sock
+sudo crictl config --set image-endpoint=unix:///run/containerd/containerd.sock
+
+# Configure containerd with cgroup detection
 sudo mkdir -p /etc/containerd/
 
-cat << EOC | sudo tee /etc/containerd/config.toml
+# Detect cgroup version and configure accordingly
+if mount | grep -q cgroup2; then
+    echo "Detected cgroup v2, configuring systemd driver"
+    cat << EOC | sudo tee /etc/containerd/config.toml
+version = 2
+
 [plugins]
-  [plugins.cri.containerd]
-    snapshotter = "overlayfs"
-    [plugins.cri.containerd.default_runtime]
-      runtime_type = "io.containerd.runc.v2"
-      runtime_engine = "/usr/local/bin/runc"
-      runtime_root = ""
+  [plugins."io.containerd.grpc.v1.cri"]
+    sandbox_image = "registry.k8s.io/pause:3.9"
+    [plugins."io.containerd.grpc.v1.cri".cni]
+      bin_dir = "/opt/cni/bin"
+      conf_dir = "/etc/cni/net.d"
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      snapshotter = "overlayfs"
+      default_runtime_name = "runc"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = true
 EOC
+    CGROUP_DRIVER="systemd"
+else
+    echo "Detected cgroup v1, configuring cgroupfs driver"
+    cat << EOC | sudo tee /etc/containerd/config.toml
+version = 2
+
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      snapshotter = "overlayfs"
+      default_runtime_name = "runc"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = false
+EOC
+    CGROUP_DRIVER="cgroupfs"
+fi
 
 cat <<EOC | sudo tee /etc/systemd/system/containerd.service
 [Unit]
@@ -761,7 +878,7 @@ After=network.target local-fs.target
 
 [Service]
 ExecStartPre=-/sbin/modprobe overlay
-ExecStart=/bin/containerd
+ExecStart=/usr/local/bin/containerd
 
 Type=notify
 Delegate=yes
@@ -777,9 +894,19 @@ TasksMax=infinity
 WantedBy=multi-user.target
 EOC
 
+# Handle Azure hostname extensions for worker certificates
+WORKER_NAME=\$(hostname -s)
+if [[ \$WORKER_NAME =~ ^(vm-worker-[0-9]+)-.+\$ ]]; then
+    BASE_WORKER_NAME="\${BASH_REMATCH[1]}"
+    echo "Detected Azure hostname extension. Using base name: \$BASE_WORKER_NAME"
+    CERT_NAME="\$BASE_WORKER_NAME"
+else
+    CERT_NAME="\$WORKER_NAME"
+fi
+
 # Configure kubelet
-sudo cp ${worker_hostname}-key.pem ${worker_hostname}.pem /var/lib/kubelet/
-sudo cp ${worker_hostname}.kubeconfig /var/lib/kubelet/kubeconfig
+sudo cp \${CERT_NAME}-key.pem \${CERT_NAME}.pem /var/lib/kubelet/
+sudo cp \${CERT_NAME}.kubeconfig /var/lib/kubelet/kubeconfig
 sudo cp ca.pem /var/lib/kubernetes/
 
 cat <<EOC | sudo tee /var/lib/kubelet/kubelet-config.yaml
@@ -794,14 +921,18 @@ authentication:
     clientCAFile: "/var/lib/kubernetes/ca.pem"
 authorization:
   mode: Webhook
+cgroupDriver: \${CGROUP_DRIVER}
 clusterDomain: "cluster.local"
 clusterDNS:
   - "10.100.0.10"
+containerRuntimeEndpoint: "unix:///var/run/containerd/containerd.sock"
+nodeName: "\${CERT_NAME}"
 podCIDR: "\${POD_CIDR}"
+registerNode: true
 resolvConf: "/run/systemd/resolve/resolv.conf"
 runtimeRequestTimeout: "15m"
-tlsCertFile: "/var/lib/kubelet/${worker_hostname}.pem"
-tlsPrivateKeyFile: "/var/lib/kubelet/${worker_hostname}-key.pem"
+tlsCertFile: "/var/lib/kubelet/\${CERT_NAME}.pem"
+tlsPrivateKeyFile: "/var/lib/kubelet/\${CERT_NAME}-key.pem"
 EOC
 
 cat <<EOC | sudo tee /etc/systemd/system/kubelet.service
@@ -810,6 +941,15 @@ Description=Kubernetes Kubelet
 Documentation=https://github.com/kubernetes/kubernetes
 After=containerd.service
 Requires=containerd.service
+
+[Service]
+ExecStart=/usr/local/bin/kubelet --config=/var/lib/kubelet/kubelet-config.yaml --kubeconfig=/var/lib/kubelet/kubeconfig --hostname-override=\${CERT_NAME} --v=2
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOC
 
 [Service]
 ExecStart=/usr/local/bin/kubelet \\
@@ -859,10 +999,23 @@ EOC
 sudo systemctl daemon-reload
 sudo systemctl enable containerd kubelet kube-proxy
 sudo systemctl start containerd kubelet kube-proxy
+
+# Enable IP forwarding for cross-node pod communication
+echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
+sudo sysctl -w net.ipv4.ip_forward=1
+
+# Add iptables rules for bridge forwarding
+sudo iptables -A FORWARD -i cnio0 -j ACCEPT
+sudo iptables -A FORWARD -o cnio0 -j ACCEPT
+
+# Save iptables rules
+sudo iptables-save | sudo tee /etc/iptables/rules.v4
 EOF
 }
 
 # Setup both worker nodes
+WORKER_1_HOSTNAME="vm-worker-1"
+WORKER_2_HOSTNAME="vm-worker-2"
 setup_worker $WORKER_1_IP $WORKER_1_HOSTNAME
 setup_worker $WORKER_2_IP $WORKER_2_HOSTNAME
 
@@ -917,7 +1070,17 @@ EOF
 
 header "Setup Complete!"
 
-log "Kubernetes cluster has been automatically configured!"
+log "Kubernetes cluster has been automatically configured with the latest improvements!"
+echo
+log "🔧 Key Improvements Applied:"
+log "  ✓ Updated to Kubernetes v1.28.0 with latest component versions"
+log "  ✓ Automatic cgroup v1/v2 detection and configuration"
+log "  ✓ Fixed etcd variable expansion in service files"
+log "  ✓ Enhanced Azure hostname handling for worker certificates"
+log "  ✓ Improved containerd configuration with proper cgroup drivers"
+log "  ✓ Enhanced kubelet configuration with automatic cgroup detection"
+log "  ✓ IP forwarding enabled for cross-node pod communication"
+log "  ✓ Bridge forwarding rules for pod-to-pod networking"
 echo
 log "Cluster Information:"
 kubectl cluster-info
@@ -928,5 +1091,13 @@ echo
 log "System Pods:"
 kubectl get pods -n kube-system
 echo
-log "You can now run smoke tests or deploy applications to the cluster"
-log "Run 'kubectl get nodes' to verify all nodes are ready"
+log "🚀 Your cluster is ready! You can now:"
+log "  • Run smoke tests: cd docs && follow chapter 10"
+log "  • Deploy applications: kubectl create deployment ..."
+log "  • Test pod networking: kubectl run test-pods ..."
+log "  • Monitor with: kubectl get nodes -w"
+echo
+log "For troubleshooting, check systemd logs:"
+log "  • etcd: ssh azureuser@$CONTROL_PLANE_IP 'sudo journalctl -u etcd'"
+log "  • kubelet: ssh azureuser@$WORKER_1_IP 'sudo journalctl -u kubelet'"
+log "  • containerd: ssh azureuser@$WORKER_1_IP 'sudo journalctl -u containerd'"

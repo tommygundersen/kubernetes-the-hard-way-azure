@@ -16,6 +16,8 @@ ssh azureuser@10.0.3.21
 
 > The following commands should be run on both worker nodes unless otherwise specified.
 
+> **Important**: This setup automatically detects your system's cgroup version (v1 or v2) and configures containerd and kubelet accordingly. Modern Ubuntu 22.04+ systems use cgroup v2 by default, which requires systemd cgroup driver configuration.
+
 ## Provisioning a Kubernetes Worker Node
 
 Install the OS dependencies:
@@ -30,26 +32,13 @@ sudo apt-get -y install socat conntrack ipset
 ### Download and Install Worker Binaries
 
 ```bash
-wget -q --show-progress --https-only --timestamping \
-  https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.28.0/crictl-v1.28.0-linux-amd64.tar.gz \
-  https://github.com/opencontainers/runc/releases/download/v1.1.8/runc.amd64 \
-  https://github.com/containernetworking/plugins/releases/download/v1.3.0/cni-plugins-linux-amd64-v1.3.0.tgz \
-  https://github.com/containerd/containerd/releases/download/v1.7.2/containerd-1.7.2-linux-amd64.tar.gz \
-  https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kubectl \
-  https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-proxy \
-  https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kubelet
+wget -q --show-progress --https-only --timestamping https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.28.0/crictl-v1.28.0-linux-amd64.tar.gz https://github.com/opencontainers/runc/releases/download/v1.1.8/runc.amd64 https://github.com/containernetworking/plugins/releases/download/v1.3.0/cni-plugins-linux-amd64-v1.3.0.tgz https://github.com/containerd/containerd/releases/download/v1.7.2/containerd-1.7.2-linux-amd64.tar.gz https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kubectl https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-proxy https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kubelet
 ```
 
 Create the installation directories:
 
 ```bash
-sudo mkdir -p \
-  /etc/cni/net.d \
-  /opt/cni/bin \
-  /var/lib/kubelet \
-  /var/lib/kube-proxy \
-  /var/lib/kubernetes \
-  /var/run/kubernetes
+sudo mkdir -p /etc/cni/net.d /opt/cni/bin /var/lib/kubelet /var/lib/kube-proxy /var/lib/kubernetes /var/run/kubernetes
 ```
 
 Install the worker binaries:
@@ -135,6 +124,40 @@ Create the `containerd` configuration file:
 sudo mkdir -p /etc/containerd/
 ```
 
+First, check which cgroup version your system is using:
+
+```bash
+# Check cgroup version
+mount | grep cgroup
+```
+
+If you see `cgroup2`, your system uses cgroup v2. If you see `cgroup` (v1), use the legacy configuration.
+
+**For cgroup v2 systems (most modern Ubuntu 22.04+ systems):**
+
+```bash
+cat << EOF | sudo tee /etc/containerd/config.toml
+version = 2
+
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+    sandbox_image = "registry.k8s.io/pause:3.9"
+    [plugins."io.containerd.grpc.v1.cri".cni]
+      bin_dir = "/opt/cni/bin"
+      conf_dir = "/etc/cni/net.d"
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      snapshotter = "overlayfs"
+      default_runtime_name = "runc"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = true
+EOF
+```
+
+**For cgroup v1 systems (older systems):**
+
 ```bash
 cat << EOF | sudo tee /etc/containerd/config.toml
 version = 2
@@ -213,6 +236,15 @@ Create the `kubelet-config.yaml` configuration file:
 # Set required variables
 POD_CIDR="10.200.0.0/16"
 
+# Detect cgroup version and set appropriate driver
+if mount | grep -q cgroup2; then
+    CGROUP_DRIVER="systemd"
+    echo "Detected cgroup v2, using systemd driver"
+else
+    CGROUP_DRIVER="cgroupfs"
+    echo "Detected cgroup v1, using cgroupfs driver"
+fi
+
 cat <<EOF | sudo tee /var/lib/kubelet/kubelet-config.yaml
 kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
@@ -225,7 +257,7 @@ authentication:
     clientCAFile: "/var/lib/kubernetes/ca.pem"
 authorization:
   mode: Webhook
-cgroupDriver: cgroupfs
+cgroupDriver: ${CGROUP_DRIVER}
 clusterDomain: "cluster.local"
 clusterDNS:
   - "10.100.0.10"
@@ -690,8 +722,7 @@ curl -k https://10.0.3.10:6443/version
 **Solution**: Install crictl manually:
 ```bash
 # Download crictl
-wget -q --show-progress --https-only --timestamping \
-  https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.28.0/crictl-v1.28.0-linux-amd64.tar.gz
+wget -q --show-progress --https-only --timestamping https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.28.0/crictl-v1.28.0-linux-amd64.tar.gz
 
 # Extract and install
 tar -xvf crictl-v1.28.0-linux-amd64.tar.gz
@@ -870,41 +901,49 @@ ip route show
 
 **Issue**: "Failed to create pod sandbox" with cgroup path format errors
 
-**Problem**: cgroup driver mismatch between kubelet and containerd/runc.
+**Problem**: cgroup driver mismatch between kubelet and containerd/runc, or incorrect cgroup version configuration.
 
 **Error message**:
 ```
 expected cgroupsPath to be of format "slice:prefix:name" for systemd cgroups, got "/kubepods/besteffort/pod..." instead
 ```
 
-**Root cause**: kubelet is using systemd cgroups but containerd/runc is configured for cgroupfs, or vice versa.
+**Root cause**: The most common cause is using cgroup v1 configuration on a cgroup v2 system (modern Ubuntu 22.04+).
 
-**Solution**: Ensure both kubelet and containerd use the same cgroup driver (cgroupfs):
+**Solution 1: Check cgroup version first**
 
 ```bash
-# Step 1: Update containerd configuration
+# Check which cgroup version your system uses
+mount | grep cgroup
+
+# If you see "cgroup2", your system uses cgroup v2
+# If you see "cgroup", your system uses cgroup v1
+```
+
+**Solution 2a: For cgroup v2 systems (recommended for modern systems)**
+
+```bash
+# Step 1: Update containerd for cgroup v2
 cat <<EOF | sudo tee /etc/containerd/config.toml
+version = 2
+
 [plugins]
-  [plugins.cri.containerd]
-    snapshotter = "overlayfs"
-    [plugins.cri.containerd.default_runtime]
-      runtime_type = "io.containerd.runc.v2"
-      runtime_engine = "/usr/local/bin/runc"
-      runtime_root = ""
-  [plugins.cri]
-    [plugins.cri.containerd.runtimes.runc]
-      runtime_type = "io.containerd.runc.v2"
-      [plugins.cri.containerd.runtimes.runc.options]
-        SystemdCgroup = false
+  [plugins."io.containerd.grpc.v1.cri"]
+    sandbox_image = "registry.k8s.io/pause:3.9"
+    [plugins."io.containerd.grpc.v1.cri".cni]
+      bin_dir = "/opt/cni/bin"
+      conf_dir = "/etc/cni/net.d"
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      snapshotter = "overlayfs"
+      default_runtime_name = "runc"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = true
 EOF
 
-# Step 2: Restart containerd
-sudo systemctl restart containerd
-
-# Step 3: Update kubelet configuration with correct cgroup driver
-
-```bash
-# Get certificate name for config
+# Step 2: Update kubelet for systemd cgroups
 WORKER_NAME=$(hostname -s)
 if [[ $WORKER_NAME =~ ^(vm-worker-[0-9]+)-.+$ ]]; then
     CERT_NAME="${BASH_REMATCH[1]}"
@@ -914,7 +953,6 @@ fi
 
 POD_CIDR="10.200.0.0/16"
 
-# Update kubelet config with correct cgroup driver
 cat <<EOF | sudo tee /var/lib/kubelet/kubelet-config.yaml
 kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
@@ -927,7 +965,7 @@ authentication:
     clientCAFile: "/var/lib/kubernetes/ca.pem"
 authorization:
   mode: Webhook
-cgroupDriver: cgroupfs
+cgroupDriver: systemd
 clusterDomain: "cluster.local"
 clusterDNS:
   - "10.100.0.10"
@@ -936,6 +974,62 @@ nodeName: "${CERT_NAME}"
 podCIDR: "${POD_CIDR}"
 registerNode: true
 resolvConf: "/run/systemd/resolve/resolv.conf"
+runtimeRequestTimeout: "15m"
+tlsCertFile: "/var/lib/kubelet/${CERT_NAME}.pem"
+tlsPrivateKeyFile: "/var/lib/kubelet/${CERT_NAME}-key.pem"
+EOF
+
+# Step 3: Restart services
+sudo systemctl stop kubelet
+sudo systemctl stop containerd
+sudo systemctl start containerd
+sleep 5
+sudo systemctl start kubelet
+```
+
+**Solution 2b: For cgroup v1 systems (legacy systems)**
+
+```bash
+# Step 1: Update containerd for cgroup v1
+cat <<EOF | sudo tee /etc/containerd/config.toml
+version = 2
+
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      snapshotter = "overlayfs"
+      default_runtime_name = "runc"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+          runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            SystemdCgroup = false
+EOF
+
+# Step 2: Update kubelet for cgroupfs
+# (Use the same kubelet config as above but with cgroupDriver: cgroupfs)
+
+# Step 3: Restart services
+sudo systemctl restart containerd
+sudo systemctl restart kubelet
+```
+
+**Verification of cgroup configuration:**
+
+```bash
+# Verify cgroup settings match
+grep cgroupDriver /var/lib/kubelet/kubelet-config.yaml
+grep SystemdCgroup /etc/containerd/config.toml
+
+# Check services are running
+sudo systemctl status containerd
+sudo systemctl status kubelet
+
+# Test pod creation
+kubectl delete deployment test-nginx --ignore-not-found
+kubectl create deployment test-nginx --image=nginx
+kubectl get pods
+```
 runtimeRequestTimeout: "15m"
 tlsCertFile: "/var/lib/kubelet/${CERT_NAME}.pem"
 tlsPrivateKeyFile: "/var/lib/kubelet/${CERT_NAME}-key.pem"

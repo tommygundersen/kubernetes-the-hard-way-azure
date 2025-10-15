@@ -65,7 +65,7 @@ The Terraform configuration creates:
 
 ```hcl
 # Azure region
-location = "West Europe"
+location = "Sweden Central"
 
 # VM configuration
 vm_size = "Standard_B2s"  # Cost-effective for labs
@@ -85,12 +85,12 @@ auto_shutdown_timezone = "UTC"
 
 ### Available VM Sizes
 
-| Size | vCPUs | RAM | Cost | Use Case |
-|------|-------|-----|------|----------|
-| Standard_B1s | 1 | 1 GB | Lowest | Basic testing |
-| Standard_B2s | 2 | 4 GB | Low | **Recommended for labs** |
-| Standard_B2ms | 2 | 8 GB | Medium | Better performance |
-| Standard_D2s_v3 | 2 | 8 GB | Medium | Production-like |
+| Size            | vCPUs | RAM  | Cost   | Use Case                 |
+| --------------- | ----- | ---- | ------ | ------------------------ |
+| Standard_B1s    | 1     | 1 GB | Lowest | Basic testing            |
+| Standard_B2s    | 2     | 4 GB | Low    | **Recommended for labs** |
+| Standard_B2ms   | 2     | 8 GB | Medium | Better performance       |
+| Standard_D2s_v3 | 2     | 8 GB | Medium | Production-like          |
 
 ## 🔑 SSH Key Management
 

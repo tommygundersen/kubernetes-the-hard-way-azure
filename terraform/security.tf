@@ -2,7 +2,7 @@
 
 # Network Security Group for Jumpbox
 resource "azurerm_network_security_group" "jumpbox" {
-  name                = "nsg-jumpbox-${random_string.suffix.result}"
+  name                = "nsg-jumpbox"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
@@ -36,7 +36,7 @@ resource "azurerm_network_security_group" "jumpbox" {
 
 # Network Security Group for Kubernetes nodes
 resource "azurerm_network_security_group" "kubernetes" {
-  name                = "nsg-k8s-${random_string.suffix.result}"
+  name                = "nsg-k8s"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
@@ -141,7 +141,7 @@ resource "azurerm_network_security_group" "kubernetes" {
     protocol                   = "*"
     source_port_range          = "*"
     destination_port_range     = "*"
-    source_address_prefix      = "10.200.0.0/16"  # Pod CIDR
+    source_address_prefix      = "10.200.0.0/16" # Pod CIDR
     destination_address_prefix = "10.200.0.0/16"
   }
 

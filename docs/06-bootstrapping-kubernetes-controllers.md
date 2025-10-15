@@ -24,11 +24,7 @@ sudo mkdir -p /etc/kubernetes/config
 Download the official Kubernetes release binaries:
 
 ```bash
-wget -q --show-progress --https-only --timestamping \
-  "https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-apiserver" \
-  "https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-controller-manager" \
-  "https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-scheduler" \
-  "https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kubectl"
+wget -q --show-progress --https-only --timestamping "https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-apiserver" "https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-controller-manager" "https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-scheduler" "https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kubectl"
 ```
 
 Install the Kubernetes binaries:
@@ -43,9 +39,7 @@ sudo mv kube-apiserver kube-controller-manager kube-scheduler kubectl /usr/local
 ```bash
 sudo mkdir -p /var/lib/kubernetes/
 
-sudo cp ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
-    service-account-key.pem service-account.pem \
-    encryption-config.yaml /var/lib/kubernetes/
+sudo cp ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem service-account-key.pem service-account.pem encryption-config.yaml /var/lib/kubernetes/
 ```
 
 The instance internal IP address will be used to advertise the API Server to members of the cluster. Retrieve the internal IP address for the current compute instance:
@@ -250,18 +244,11 @@ From the jumpbox, create the `system:kube-apiserver-to-kubelet` [ClusterRole](ht
 cd ~/kubernetes-the-hard-way-azure/certificates
 
 # Set up kubectl configuration
-kubectl config set-cluster kubernetes-the-hard-way \
-  --certificate-authority=ca.pem \
-  --embed-certs=true \
-  --server=https://10.0.3.10:6443
+kubectl config set-cluster kubernetes-the-hard-way --certificate-authority=ca.pem --embed-certs=true --server=https://10.0.3.10:6443
 
-kubectl config set-credentials admin \
-  --client-certificate=admin.pem \
-  --client-key=admin-key.pem
+kubectl config set-credentials admin --client-certificate=admin.pem --client-key=admin-key.pem
 
-kubectl config set-context kubernetes-the-hard-way \
-  --cluster=kubernetes-the-hard-way \
-  --user=admin
+kubectl config set-context kubernetes-the-hard-way --cluster=kubernetes-the-hard-way --user=admin
 
 kubectl config use-context kubernetes-the-hard-way
 
@@ -372,12 +359,7 @@ curl -k https://127.0.0.1:6443/healthz
 openssl x509 -in /var/lib/kubernetes/kubernetes.pem -text -noout
 
 # Check etcd connectivity
-sudo ETCDCTL_API=3 etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/etcd/ca.pem \
-  --cert=/etc/etcd/kubernetes.pem \
-  --key=/etc/etcd/kubernetes-key.pem \
-  endpoint health
+sudo ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/etcd/ca.pem --cert=/etc/etcd/kubernetes.pem --key=/etc/etcd/kubernetes-key.pem endpoint health
 ```
 
 ### Controller Manager Issues

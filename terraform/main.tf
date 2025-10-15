@@ -13,10 +13,6 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.0"
-    }
   }
 }
 
@@ -25,39 +21,32 @@ provider "azurerm" {
   features {}
 }
 
-# Generate random suffix for unique resource names
-resource "random_string" "suffix" {
-  length  = 6
-  special = false
-  upper   = false
-}
-
 # Local values for configuration
 locals {
   location            = var.location
-  resource_group_name = "rg-k8s-the-hard-way-${random_string.suffix.result}"
-  
+  resource_group_name = "rg-k8s-the-hard-way"
+
   # Network configuration
   vnet_cidr = "10.0.0.0/16"
   subnets = {
     bastion = {
-      name    = "AzureBastionSubnet"  # Required name for Azure Bastion
-      cidr    = "10.0.1.0/24"
+      name = "AzureBastionSubnet" # Required name for Azure Bastion
+      cidr = "10.0.1.0/24"
     }
     jumpbox = {
-      name    = "snet-jumpbox"
-      cidr    = "10.0.2.0/24"
+      name = "snet-jumpbox"
+      cidr = "10.0.2.0/24"
     }
     kubernetes = {
-      name    = "snet-k8s"
-      cidr    = "10.0.3.0/24"
+      name = "snet-k8s"
+      cidr = "10.0.3.0/24"
     }
   }
-  
+
   # VM configuration
-  vm_size = "Standard_B2s"
+  vm_size        = "Standard_B2s"
   admin_username = "azureuser"
-  
+
   # Common tags
   tags = {
     Environment = "Lab"
@@ -76,7 +65,7 @@ resource "azurerm_resource_group" "main" {
 
 # Virtual Network
 resource "azurerm_virtual_network" "main" {
-  name                = "vnet-k8s-${random_string.suffix.result}"
+  name                = "vnet-k8s"
   address_space       = [local.vnet_cidr]
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
@@ -107,7 +96,7 @@ resource "azurerm_subnet" "kubernetes" {
 
 # Public IP for NAT Gateway
 resource "azurerm_public_ip" "nat_gateway" {
-  name                = "pip-nat-gateway-${random_string.suffix.result}"
+  name                = "pip-nat-gateway"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   allocation_method   = "Static"
@@ -118,7 +107,7 @@ resource "azurerm_public_ip" "nat_gateway" {
 
 # NAT Gateway
 resource "azurerm_nat_gateway" "main" {
-  name                    = "nat-gateway-${random_string.suffix.result}"
+  name                    = "nat-gateway"
   location                = azurerm_resource_group.main.location
   resource_group_name     = azurerm_resource_group.main.name
   sku_name                = "Standard"
@@ -149,10 +138,10 @@ resource "azurerm_subnet_nat_gateway_association" "kubernetes" {
 
 # Azure Bastion Host (Developer Edition - Free)
 resource "azurerm_bastion_host" "main" {
-  name                   = "bastion-${random_string.suffix.result}"
-  location               = azurerm_resource_group.main.location
-  resource_group_name    = azurerm_resource_group.main.name
-  sku                    = "Developer"  # Free tier
-  virtual_network_id     = azurerm_virtual_network.main.id
-  tags                   = local.tags
+  name                = "bastion"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  sku                 = "Developer" # Free tier
+  virtual_network_id  = azurerm_virtual_network.main.id
+  tags                = local.tags
 }

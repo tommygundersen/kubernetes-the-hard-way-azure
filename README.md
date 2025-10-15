@@ -12,32 +12,23 @@ This repository contains a complete implementation of "Kubernetes the Hard Way" 
 - **Azure Native**: Uses Azure services with private networking and security best practices
 - **Infrastructure Automation**: Quick infrastructure provisioning so you can focus on Kubernetes
 - **Step-by-Step Learning**: Detailed documentation for each component
-- **Cross-Platform Support**: Bash scripts for Linux/macOS, Terraform for Windows users
 - **Quick Testing**: Automated setup script for rapid validation
 
 ## 🚀 Quick Start Options
 
-### Option 1: Terraform (Recommended for Windows)
-Fast, parallel deployment with excellent Windows support:
-
-```powershell
-# Windows PowerShell
-cd terraform
-.\deploy.ps1 -StudentName "your-name"
-```
+### Option 1: Terraform (Recommended)
+Fast infrastructure deployment with cross-platform support:
 
 ```bash
-# Linux/macOS
 cd terraform
-./deploy.sh --student-name "your-name"
-```
+# Copy and configure variables
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your preferences
 
-### Option 2: Bash Scripts (Linux/macOS/WSL)
-Traditional approach with detailed control:
-
-```bash
-cd scripts
-./bootstrap-infrastructure.sh
+# Deploy infrastructure
+terraform init
+terraform plan
+terraform apply
 ```
 
 [🔗 **Full Setup Instructions**](#-setup-instructions) | [🐳 **Terraform Guide**](terraform/README.md)
@@ -105,11 +96,14 @@ cd scripts
 git clone https://github.com/your-username/kubernetes-the-hard-way-azure.git
 cd kubernetes-the-hard-way-azure
 
-# Make scripts executable
-chmod +x scripts/*.sh
+# Deploy infrastructure using Terraform
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your preferences
 
-# Provision Azure infrastructure
-./scripts/bootstrap-infrastructure.sh
+terraform init
+terraform plan
+terraform apply
 ```
 
 **⏱️ Infrastructure provisioning takes ~10-15 minutes**
@@ -123,17 +117,15 @@ chmod +x scripts/*.sh
 
 ### 4. Setup SSH Access
 
-On the jumpbox, set up SSH access to Kubernetes VMs:
+SSH keys are automatically configured during Terraform deployment. Test connectivity from the jumpbox:
 
 ```bash
-# Generate SSH keys (if not already done)
-./scripts/setup-ssh.sh generate
+# Test connectivity to control plane
+ssh azureuser@10.0.3.10
 
-# Follow instructions to copy SSH key to jumpbox
-./scripts/setup-ssh.sh setup
-
-# Test connectivity
-./scripts/setup-ssh.sh test
+# Test connectivity to worker nodes  
+ssh azureuser@10.0.3.20
+ssh azureuser@10.0.3.21
 ```
 
 ### 5. Choose Your Path
@@ -142,7 +134,7 @@ On the jumpbox, set up SSH access to Kubernetes VMs:
 Follow the step-by-step labs to build Kubernetes manually:
 
 ```bash
-# Clone repository on jumpbox
+# Clone repository on jumpbox (if not already done)
 git clone https://github.com/your-username/kubernetes-the-hard-way-azure.git
 cd kubernetes-the-hard-way-azure
 
@@ -161,18 +153,18 @@ cd kubernetes-the-hard-way-azure
 
 ## 📚 Learning Labs
 
-| Lab | Topic | Time | Difficulty |
-|-----|-------|------|------------|
-| [01](docs/01-prerequisites.md) | Prerequisites & SSH Setup | 15 min | ⭐ |
-| [02](docs/02-certificate-authority.md) | Certificate Authority & TLS | 30 min | ⭐⭐ |
-| [03](docs/03-kubernetes-configuration-files.md) | Kubernetes Configuration Files | 20 min | ⭐⭐ |
-| [04](docs/04-data-encryption-keys.md) | Data Encryption Keys | 10 min | ⭐ |
-| [05](docs/05-bootstrapping-etcd.md) | Bootstrapping etcd | 25 min | ⭐⭐ |
-| [06](docs/06-bootstrapping-kubernetes-controllers.md) | Control Plane Setup | 35 min | ⭐⭐⭐ |
-| [07](docs/07-bootstrapping-kubernetes-workers.md) | Worker Nodes Setup | 30 min | ⭐⭐⭐ |
-| [08](docs/08-configuring-kubectl.md) | kubectl Configuration | 15 min | ⭐⭐ |
-| [09](docs/09-pod-network-routes.md) | Pod Network Routes | 20 min | ⭐⭐ |
-| [10](docs/10-smoke-test.md) | Smoke Test | 15 min | ⭐ |
+| Lab                                                   | Topic                          | Time   | Difficulty |
+| ----------------------------------------------------- | ------------------------------ | ------ | ---------- |
+| [01](docs/01-prerequisites.md)                        | Prerequisites & SSH Setup      | 15 min | ⭐          |
+| [02](docs/02-certificate-authority.md)                | Certificate Authority & TLS    | 30 min | ⭐⭐         |
+| [03](docs/03-kubernetes-configuration-files.md)       | Kubernetes Configuration Files | 20 min | ⭐⭐         |
+| [04](docs/04-data-encryption-keys.md)                 | Data Encryption Keys           | 10 min | ⭐          |
+| [05](docs/05-bootstrapping-etcd.md)                   | Bootstrapping etcd             | 25 min | ⭐⭐         |
+| [06](docs/06-bootstrapping-kubernetes-controllers.md) | Control Plane Setup            | 35 min | ⭐⭐⭐        |
+| [07](docs/07-bootstrapping-kubernetes-workers.md)     | Worker Nodes Setup             | 30 min | ⭐⭐⭐        |
+| [08](docs/08-configuring-kubectl.md)                  | kubectl Configuration          | 15 min | ⭐⭐         |
+| [09](docs/09-pod-network-routes.md)                   | Pod Network Routes             | 20 min | ⭐⭐         |
+| [10](docs/10-smoke-test.md)                           | Smoke Test                     | 15 min | ⭐          |
 
 **Total estimated time**: ~3-4 hours
 
@@ -180,17 +172,13 @@ cd kubernetes-the-hard-way-azure
 
 ```
 kubernetes-the-hard-way-azure/
-├── terraform/                         # Terraform infrastructure (Windows-friendly)
+├── terraform/                         # Terraform infrastructure
 │   ├── main.tf                       # Core infrastructure
 │   ├── variables.tf                  # Configuration variables
 │   ├── outputs.tf                    # Deployment outputs
-│   ├── deploy.ps1                    # Windows PowerShell deployment
-│   ├── deploy.sh                     # Linux/macOS deployment
 │   ├── cleanup.ps1                   # Resource cleanup
 │   └── README.md                     # Terraform guide
 ├── scripts/
-│   ├── bootstrap-infrastructure.sh    # Bash infrastructure provisioning
-│   ├── setup-ssh.sh                  # SSH key management
 │   └── automated-setup.sh             # Automated K8s setup
 ├── docs/
 │   ├── README.md                      # Lab overview
@@ -275,12 +263,12 @@ az group delete --name rg-k8s-the-hard-way --yes --no-wait
 
 ### Deployment Recommendations
 
-| Student Environment | Recommended Method | Benefits |
-|---------------------|-------------------|----------|
-| Windows laptops | Terraform | Native PowerShell, parallel deployment |
-| macOS/Linux | Either method | Bash scripts for learning, Terraform for speed |
-| Mixed environment | Terraform | Consistent experience across platforms |
-| Educational focus | Bash scripts | More visibility into infrastructure steps |
+| Student Environment | Recommended Method | Benefits                                       |
+| ------------------- | ------------------ | ---------------------------------------------- |
+| Windows laptops     | Terraform          | Native PowerShell, parallel deployment         |
+| macOS/Linux         | Either method      | Bash scripts for learning, Terraform for speed |
+| Mixed environment   | Terraform          | Consistent experience across platforms         |
+| Educational focus   | Bash scripts       | More visibility into infrastructure steps      |
 
 ### Learning Objectives
 
@@ -328,13 +316,13 @@ The network architecture supports:
 
 ### Common Issues
 
-| Issue | Solution |
-|-------|----------|
-| SSH connectivity fails | Check Bastion connection and private key |
-| VM provisioning errors | Verify Azure quota and permissions |
-| Certificate errors | Regenerate certificates with correct hostnames |
-| etcd won't start | Check certificate placement and permissions |
-| Pods won't schedule | Verify kubelet and container runtime |
+| Issue                  | Solution                                       |
+| ---------------------- | ---------------------------------------------- |
+| SSH connectivity fails | Check Bastion connection and private key       |
+| VM provisioning errors | Verify Azure quota and permissions             |
+| Certificate errors     | Regenerate certificates with correct hostnames |
+| etcd won't start       | Check certificate placement and permissions    |
+| Pods won't schedule    | Verify kubelet and container runtime           |
 
 ### Getting Help
 

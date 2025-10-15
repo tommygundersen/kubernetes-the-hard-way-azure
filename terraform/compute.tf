@@ -2,7 +2,7 @@
 
 # Network Interfaces
 resource "azurerm_network_interface" "jumpbox" {
-  name                = "nic-jumpbox-${random_string.suffix.result}"
+  name                = "nic-jumpbox"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
@@ -18,7 +18,7 @@ resource "azurerm_network_interface" "jumpbox" {
 }
 
 resource "azurerm_network_interface" "control_plane" {
-  name                = "nic-control-plane-${random_string.suffix.result}"
+  name                = "nic-control-plane"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
@@ -31,12 +31,12 @@ resource "azurerm_network_interface" "control_plane" {
   }
 
   accelerated_networking_enabled = var.enable_accelerated_networking
-  ip_forwarding_enabled         = true  # Required for Kubernetes networking
+  ip_forwarding_enabled          = true # Required for Kubernetes networking
 }
 
 resource "azurerm_network_interface" "worker" {
   count               = 2
-  name                = "nic-worker-${count.index + 1}-${random_string.suffix.result}"
+  name                = "nic-worker-${count.index + 1}"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
@@ -49,12 +49,12 @@ resource "azurerm_network_interface" "worker" {
   }
 
   accelerated_networking_enabled = var.enable_accelerated_networking
-  ip_forwarding_enabled         = true  # Required for Kubernetes networking
+  ip_forwarding_enabled          = true # Required for Kubernetes networking
 }
 
 # Virtual Machines
 resource "azurerm_linux_virtual_machine" "jumpbox" {
-  name                = "vm-jumpbox-${random_string.suffix.result}"
+  name                = "vm-jumpbox"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   size                = var.vm_size
@@ -95,7 +95,7 @@ resource "azurerm_linux_virtual_machine" "jumpbox" {
 }
 
 resource "azurerm_linux_virtual_machine" "control_plane" {
-  name                = "vm-control-plane-${random_string.suffix.result}"
+  name                = "vm-control-plane"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   size                = var.vm_size
@@ -132,13 +132,13 @@ resource "azurerm_linux_virtual_machine" "control_plane" {
   # Basic system preparation
   custom_data = base64encode(templatefile("${path.module}/scripts/k8s-node-init.sh", {
     admin_username = var.admin_username
-    node_role     = "control-plane"
+    node_role      = "control-plane"
   }))
 }
 
 resource "azurerm_linux_virtual_machine" "worker" {
   count               = 2
-  name                = "vm-worker-${count.index + 1}-${random_string.suffix.result}"
+  name                = "vm-worker-${count.index + 1}"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   size                = var.vm_size
@@ -176,7 +176,7 @@ resource "azurerm_linux_virtual_machine" "worker" {
   # Basic system preparation
   custom_data = base64encode(templatefile("${path.module}/scripts/k8s-node-init.sh", {
     admin_username = var.admin_username
-    node_role     = "worker"
+    node_role      = "worker"
   }))
 }
 
