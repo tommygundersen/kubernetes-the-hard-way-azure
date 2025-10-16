@@ -1,5 +1,15 @@
 # Virtual Machines for Kubernetes Cluster
 
+# Public IP for jumpbox (for direct SSH access)
+resource "azurerm_public_ip" "jumpbox" {
+  name                = "pip-jumpbox"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = local.tags
+}
+
 # Network Interfaces
 resource "azurerm_network_interface" "jumpbox" {
   name                = "nic-jumpbox"
@@ -12,6 +22,7 @@ resource "azurerm_network_interface" "jumpbox" {
     subnet_id                     = azurerm_subnet.jumpbox.id
     private_ip_address_allocation = "Static"
     private_ip_address            = "10.0.2.10"
+    public_ip_address_id          = azurerm_public_ip.jumpbox.id
   }
 
   accelerated_networking_enabled = var.enable_accelerated_networking

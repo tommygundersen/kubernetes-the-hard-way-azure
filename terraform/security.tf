@@ -176,10 +176,18 @@ resource "azurerm_network_security_group" "kubernetes" {
 resource "azurerm_subnet_network_security_group_association" "jumpbox" {
   subnet_id                 = azurerm_subnet.jumpbox.id
   network_security_group_id = azurerm_network_security_group.jumpbox.id
+
+  lifecycle {
+    ignore_changes = [subnet_id, network_security_group_id]
+  }
 }
 
 # Associate NSG with kubernetes subnet
 resource "azurerm_subnet_network_security_group_association" "kubernetes" {
   subnet_id                 = azurerm_subnet.kubernetes.id
   network_security_group_id = azurerm_network_security_group.kubernetes.id
+
+  lifecycle {
+    ignore_changes = [subnet_id, network_security_group_id]
+  }
 }

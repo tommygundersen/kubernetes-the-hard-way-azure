@@ -78,6 +78,10 @@ resource "azurerm_subnet" "bastion" {
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [local.subnets.bastion.cidr]
+
+  lifecycle {
+    ignore_changes = [default_outbound_access_enabled]
+  }
 }
 
 resource "azurerm_subnet" "jumpbox" {
@@ -85,6 +89,10 @@ resource "azurerm_subnet" "jumpbox" {
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [local.subnets.jumpbox.cidr]
+
+  lifecycle {
+    ignore_changes = [default_outbound_access_enabled]
+  }
 }
 
 resource "azurerm_subnet" "kubernetes" {
@@ -92,6 +100,10 @@ resource "azurerm_subnet" "kubernetes" {
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [local.subnets.kubernetes.cidr]
+
+  lifecycle {
+    ignore_changes = [default_outbound_access_enabled]
+  }
 }
 
 # Public IP for NAT Gateway
@@ -144,4 +156,6 @@ resource "azurerm_bastion_host" "main" {
   sku                 = "Developer" # Free tier
   virtual_network_id  = azurerm_virtual_network.main.id
   tags                = local.tags
+
+  depends_on = [azurerm_virtual_network.main]
 }

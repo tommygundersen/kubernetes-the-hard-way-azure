@@ -26,15 +26,15 @@ output "subnet_information" {
   description = "Information about all subnets"
   value = {
     bastion = {
-      name          = azurerm_subnet.bastion.name
+      name           = azurerm_subnet.bastion.name
       address_prefix = azurerm_subnet.bastion.address_prefixes[0]
     }
     jumpbox = {
-      name          = azurerm_subnet.jumpbox.name
+      name           = azurerm_subnet.jumpbox.name
       address_prefix = azurerm_subnet.jumpbox.address_prefixes[0]
     }
     kubernetes = {
-      name          = azurerm_subnet.kubernetes.name
+      name           = azurerm_subnet.kubernetes.name
       address_prefix = azurerm_subnet.kubernetes.address_prefixes[0]
     }
   }
@@ -44,6 +44,12 @@ output "subnet_information" {
 output "nat_gateway_public_ip" {
   description = "The public IP address of the NAT Gateway"
   value       = azurerm_public_ip.nat_gateway.ip_address
+}
+
+# Jumpbox Public IP
+output "jumpbox_public_ip" {
+  description = "The public IP address of the jumpbox for direct SSH access"
+  value       = azurerm_public_ip.jumpbox.ip_address
 }
 
 # Azure Bastion (Developer Edition - No dedicated public IP)
@@ -63,6 +69,7 @@ output "vm_information" {
     jumpbox = {
       name       = azurerm_linux_virtual_machine.jumpbox.name
       private_ip = azurerm_network_interface.jumpbox.private_ip_address
+      public_ip  = azurerm_public_ip.jumpbox.ip_address
       size       = azurerm_linux_virtual_machine.jumpbox.size
     }
     control_plane = {
@@ -94,9 +101,11 @@ output "ssh_key_information" {
 output "connection_instructions" {
   description = "Instructions for connecting to the environment"
   value = {
-    bastion_connection = "Use Azure Bastion to connect to VMs via the Azure portal"
-    jumpbox_ip        = azurerm_network_interface.jumpbox.private_ip_address
-    control_plane_ip  = azurerm_network_interface.control_plane.private_ip_address
+    direct_ssh_to_jumpbox = "ssh -i ${var.ssh_public_key_path == "" ? "${path.module}/ssh-keys/k8s-lab-key" : "your-private-key"} azureuser@${azurerm_public_ip.jumpbox.ip_address}"
+    bastion_connection    = "Use Azure Bastion to connect to VMs via the Azure portal"
+    jumpbox_public_ip     = azurerm_public_ip.jumpbox.ip_address
+    jumpbox_private_ip    = azurerm_network_interface.jumpbox.private_ip_address
+    control_plane_ip      = azurerm_network_interface.control_plane.private_ip_address
     worker_ips = [
       for i in range(2) : azurerm_network_interface.worker[i].private_ip_address
     ]
@@ -108,10 +117,10 @@ output "connection_instructions" {
 output "lab_configuration" {
   description = "Configuration values needed for the lab"
   value = {
-    cluster_cidr = "10.200.0.0/16"
-    service_cidr = "10.100.0.0/16"
-    dns_ip       = "10.100.0.10"
-    pod_cidr     = "10.200.0.0/16"
+    cluster_cidr       = "10.200.0.0/16"
+    service_cidr       = "10.100.0.0/16"
+    dns_ip             = "10.100.0.10"
+    pod_cidr           = "10.200.0.0/16"
     kubernetes_version = var.kubernetes_version
   }
 }
@@ -120,10 +129,10 @@ output "lab_configuration" {
 output "cost_management" {
   description = "Cost management features"
   value = {
-    auto_shutdown_enabled = var.auto_shutdown_enabled
-    auto_shutdown_time    = var.auto_shutdown_time
+    auto_shutdown_enabled  = var.auto_shutdown_enabled
+    auto_shutdown_time     = var.auto_shutdown_time
     auto_shutdown_timezone = var.auto_shutdown_timezone
-    vm_size_used          = var.vm_size
+    vm_size_used           = var.vm_size
   }
 }
 
@@ -150,9 +159,9 @@ output "admin_username" {
 output "resource_ids" {
   description = "Azure resource IDs for automation"
   value = {
-    resource_group_id = azurerm_resource_group.main.id
-    vnet_id          = azurerm_virtual_network.main.id
-    jumpbox_vm_id    = azurerm_linux_virtual_machine.jumpbox.id
+    resource_group_id   = azurerm_resource_group.main.id
+    vnet_id             = azurerm_virtual_network.main.id
+    jumpbox_vm_id       = azurerm_linux_virtual_machine.jumpbox.id
     control_plane_vm_id = azurerm_linux_virtual_machine.control_plane.id
     worker_vm_ids = [
       for vm in azurerm_linux_virtual_machine.worker : vm.id
