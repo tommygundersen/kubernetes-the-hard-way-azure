@@ -24,7 +24,7 @@ echo "Kubernetes API Server: ${KUBERNETES_PUBLIC_ADDRESS}"
 
 ### The kubelet Kubernetes Configuration File
 
-When generating kubeconfig files for Kubelets the client certificate matching the Kubelet's node name must be used. This will ensure Kubelets are properly authorized by the Kubernetes [Node Authorizer](https://kubernetes.io/docs/admin/authorization/node/).
+When generating kubeconfig files for Kubelets the client certificate matching the Kubelet's node name must be used. This will ensure Kubelets are properly authorized by the Kubernetes [Node Authorizer](https://kubernetes.io/docs/reference/access-authn-authz/node/).
 
 Generate a kubeconfig file for each worker node:
 

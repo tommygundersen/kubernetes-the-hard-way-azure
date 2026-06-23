@@ -24,7 +24,7 @@ provider "azurerm" {
 # Local values for configuration
 locals {
   location            = var.location
-  resource_group_name = "rg-k8s-the-hard-way"
+  resource_group_name = "rg-${var.student_name}-k8s-hard-way"
 
   # Network configuration
   vnet_cidr = "10.0.0.0/16"

@@ -2,9 +2,13 @@
 
 In this lab you will provision a [PKI Infrastructure](https://en.wikipedia.org/wiki/Public_key_infrastructure) using CloudFlare's PKI toolkit, [cfssl](https://github.com/cloudflare/cfssl), then use it to bootstrap a Certificate Authority, and generate TLS certificates for the following components: etcd, kube-apiserver, kube-controller-manager, kube-scheduler, kubelet, and kube-proxy.
 
+![Certificate Authority and TLS Overview](img/02-cert-auth-tls.png)
+
 ## Certificate Authority
 
 In this section you will provision a Certificate Authority that can be used to generate additional TLS certificates.
+
+**Why this is required**: Kubernetes components communicate over the network and need to verify each other's identity. A Certificate Authority (CA) acts as a trusted root that signs all component certificates. Any certificate signed by this CA can be verified by other components, establishing a chain of trust. Without this, there would be no way to securely authenticate the various components talking to each other.
 
 Generate the CA configuration file, certificate, and private key:
 
@@ -19,6 +23,8 @@ cd certificates
 ```
 
 ### Create the CA Configuration File
+
+**Why this is required**: This configuration file defines the policies for how certificates will be signed by the CA. The "kubernetes" profile specifies that certificates will be valid for 8760 hours (1 year) and can be used for both server authentication (proving the server's identity) and client authentication (proving the client's identity). This ensures all Kubernetes components can both serve requests securely and make authenticated requests to other components.
 
 ```bash
 cat > ca-config.json << EOF
@@ -39,6 +45,8 @@ EOF
 ```
 
 ### Create the CA Certificate Signing Request
+
+**Why this is required**: A Certificate Signing Request (CSR) defines the identity information that will be embedded in the CA certificate. The Common Name (CN) "Kubernetes" identifies this CA, and the organizational details provide additional context. This CSR is used to generate the self-signed root CA certificate that will be trusted by all cluster components.
 
 ```bash
 cat > ca-csr.json << EOF
@@ -63,6 +71,8 @@ EOF
 
 ### Generate the CA Certificate and Private Key
 
+**Why this is required**: This command creates the actual CA certificate (`ca.pem`) and its private key (`ca-key.pem`). The CA certificate will be distributed to all nodes so they can verify certificates signed by this CA. The private key must be kept secure as it's used to sign all other certificates - anyone with access to this key could create fraudulent certificates that would be trusted by the cluster.
+
 ```bash
 cfssl gencert -initca ca-csr.json | cfssljson -bare ca
 ```
@@ -79,6 +89,8 @@ ca.pem
 In this section you will generate client and server certificates for each Kubernetes component and a client certificate for the Kubernetes `admin` user.
 
 ### The Admin Client Certificate
+
+**Why this is required**: The admin certificate is used by cluster administrators (you) to authenticate with the Kubernetes API server. The Organization (O) field is set to `system:masters`, which gives this certificate full cluster admin privileges. This certificate will be used with kubectl to perform administrative operations on the cluster.
 
 Generate the `admin` client certificate and private key:
 
@@ -119,7 +131,7 @@ admin.pem
 
 ### The Kubelet Client Certificates
 
-Kubernetes uses a [special-purpose authorization mode](https://kubernetes.io/docs/admin/authorization/node/) called Node Authorizer, that specifically authorizes API requests made by [Kubelets](https://kubernetes.io/docs/concepts/overview/components/#kubelet). In order to be authorized by the Node Authorizer, Kubelets must use a credential that identifies them as being in the `system:nodes` group, with a username of `system:node:<nodeName>`. In this section you will create a certificate for each Kubernetes worker node that meets the Node Authorizer requirements.
+**Why this is required**: Each worker node runs a kubelet that needs to authenticate with the API server to register the node, report status, and receive pod specifications. Kubernetes uses a [special-purpose authorization mode](https://kubernetes.io/docs/reference/access-authn-authz/node/) called Node Authorizer, that specifically authorizes API requests made by [Kubelets](https://kubernetes.io/docs/concepts/overview/components/#kubelet). The certificate's CN must follow the pattern `system:node:<nodeName>` and the O field must be `system:nodes` for the Node Authorizer to grant appropriate permissions. Each node gets a unique certificate so actions can be attributed to specific nodes. The `-hostname` flag includes both the hostname and IP address so the certificate is valid regardless of how the node is addressed.
 
 Generate a certificate and private key for each Kubernetes worker node:
 
@@ -192,6 +204,8 @@ vm-worker-2.pem
 
 ### The Controller Manager Client Certificate
 
+**Why this is required**: The kube-controller-manager is a control plane component that runs various controllers (like the node controller, replication controller, etc.). It needs to authenticate with the API server to watch for changes and update the cluster state. The CN `system:kube-controller-manager` and O `system:kube-controller-manager` are recognized by Kubernetes RBAC to grant the controller manager the permissions it needs to manage cluster resources.
+
 Generate the `kube-controller-manager` client certificate and private key:
 
 ```bash
@@ -230,6 +244,8 @@ kube-controller-manager.pem
 ```
 
 ### The Kube Proxy Client Certificate
+
+**Why this is required**: kube-proxy runs on each node and maintains network rules for service load balancing. It needs to watch the API server for service and endpoint changes. The CN `system:kube-proxy` and O `system:node-proxier` identify it to the Kubernetes RBAC system, granting it permissions to read services and endpoints but not modify them or access sensitive data.
 
 Generate the `kube-proxy` client certificate and private key:
 
@@ -270,6 +286,8 @@ kube-proxy.pem
 
 ### The Scheduler Client Certificate
 
+**Why this is required**: The kube-scheduler is responsible for assigning pods to nodes. It needs to watch for unscheduled pods and read node information from the API server, then update pod specifications with node assignments. The CN `system:kube-scheduler` and O `system:kube-scheduler` grant it the necessary RBAC permissions to perform scheduling decisions without broader cluster admin access.
+
 Generate the `kube-scheduler` client certificate and private key:
 
 ```bash
@@ -309,14 +327,16 @@ kube-scheduler.pem
 
 ### The Kubernetes API Server Certificate
 
-The `kubernetes-api-server` certificate requires all names that various components may reach it to be part of the alternate names. These include the different DNS names, and IP addresses such as the master servers IP address, the load balancers IP address, the kube-api service IP address etc.
+**Why this is required**: The API server is the central communication hub for Kubernetes - all components talk to it. As a server, it needs a certificate to prove its identity to clients. The `kubernetes-api-server` certificate requires all names that various components may reach it to be part of the alternate names. These include the different DNS names, and IP addresses such as the master servers IP address, the load balancers IP address, the kube-api service IP address etc.
 
-The IP `10.100.0.1` is designated as the first IP in the services subnet and will be assigned to the `kubernetes` service which is created by default.
+The IP `10.100.0.1` is designated as the first IP in the services subnet and will be assigned to the `kubernetes` service which is created by default. This allows pods to reach the API server via the service DNS name.
 
 **Important**: `127.0.0.1` is required because:
 - The API server connects to etcd on localhost (`https://127.0.0.1:2379`)
 - kube-controller-manager and kube-scheduler connect to API server on localhost (`https://127.0.0.1:6443`)
 - etcd listens on both external IP and localhost for different purposes
+
+All these hostnames and IPs must be in the certificate's Subject Alternative Names (SAN) field, or TLS verification will fail when components try to connect using those addresses.
 
 Generate the Kubernetes API Server certificate and private key:
 
@@ -358,7 +378,7 @@ kubernetes.pem
 
 ## The Service Account Key Pair
 
-The Kubernetes Controller Manager leverages a key pair to generate and sign service account tokens as described in the [managing service accounts](https://kubernetes.io/docs/admin/service-accounts-admin/) documentation.
+**Why this is required**: When pods run in Kubernetes, they're automatically assigned a service account with an associated token. This token is used by applications inside pods to authenticate with the API server. The Kubernetes Controller Manager leverages a key pair to generate and sign service account tokens as described in the [managing service accounts](https://kubernetes.io/docs/admin/service-accounts-admin/) documentation. The API server uses the public key (from the certificate) to verify that service account tokens were legitimately signed by the controller manager. Without this, pods wouldn't be able to securely call the Kubernetes API.
 
 Generate the `service-account` certificate and private key:
 
@@ -399,6 +419,8 @@ service-account.pem
 
 ## Distribute the Client and Server Certificates
 
+**Why this is required**: Certificates need to be on the machines where they'll be used. Worker nodes need the CA certificate (to verify the API server's identity), their own kubelet certificate (to authenticate themselves), and later will need the kube-proxy certificate. The control plane needs the CA certificate and private key (to sign service account tokens), the API server certificate (to prove its identity), and the service account key pair (to generate and verify service account tokens).
+
 Copy the appropriate certificates and private keys to each worker instance:
 
 ```bash
@@ -418,6 +440,8 @@ scp ca.pem ca-key.pem kubernetes-key.pem kubernetes.pem \
 > The `kube-proxy`, `kube-controller-manager`, `kube-scheduler`, and `kubelet` client certificates will be used to generate client authentication configuration files in the next lab.
 
 ## Verification
+
+**Why this is important**: Verifying the certificates ensures they were generated correctly with the right fields, expiration dates, and signatures. Catching certificate issues now prevents authentication failures later when components try to communicate. It's much easier to regenerate a certificate now than to debug TLS errors across the cluster.
 
 List the generated certificates:
 

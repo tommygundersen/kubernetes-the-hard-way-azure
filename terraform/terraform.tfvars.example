@@ -11,7 +11,7 @@ vm_size = "Standard_B2s"  # Cost-effective for labs, upgrade to B4ms for better 
 admin_username = "azureuser"
 # ssh_public_key_path = "~/.ssh/id_rsa.pub"  # Uncomment and set path to use existing SSH key
 
-# Student Information (optional)
+# Student Information
 student_name = "student01"
 environment  = "lab"
 

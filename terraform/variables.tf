@@ -76,9 +76,14 @@ variable "environment" {
 }
 
 variable "student_name" {
-  description = "Student name for resource tagging (optional)"
+  description = "Student name for resource naming (used in resource group name: rg-<student_name>-k8s-hard-way)"
   type        = string
-  default     = ""
+  default     = "student"
+  
+  validation {
+    condition     = length(var.student_name) >= 2 && length(var.student_name) <= 20 && can(regex("^[a-z0-9-]+$", var.student_name))
+    error_message = "Student name must be 2-20 characters, lowercase alphanumeric with hyphens only."
+  }
 }
 
 variable "auto_shutdown_enabled" {

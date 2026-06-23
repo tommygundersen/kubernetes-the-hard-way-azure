@@ -2,7 +2,11 @@
 
 Kubernetes components are stateless and store cluster state in [etcd](https://github.com/etcd-io/etcd). In this lab you will bootstrap a single-node etcd cluster and configure it for high availability and secure remote access.
 
+![etcd Architecture](img/05-etcd.png)
+
 ## Prerequisites
+
+**Why this is required**: etcd is the backing store for all Kubernetes cluster data. It must run on the control plane node where the Kubernetes API server will be installed, as they need to communicate locally over localhost (127.0.0.1) for security and performance. All subsequent commands in this lab operate on the control plane.
 
 The commands in this lab must be run on the control plane instance: `vm-control-plane`. Login to the control plane instance using SSH from the jumpbox.
 
@@ -12,6 +16,8 @@ ssh azureuser@10.0.3.10
 ```
 
 ### Download and Install the etcd Binaries
+
+**Why this is required**: etcd is not included by default in most Linux distributions. We need to download the official binaries directly from the etcd project. Version 3.5.9 is stable and well-tested with Kubernetes 1.28. The binaries include `etcd` (the server) and `etcdctl` (the command-line client for administration and testing).
 
 Download the official etcd release binaries from the [etcd](https://github.com/etcd-io/etcd) GitHub project:
 
@@ -33,24 +39,59 @@ etcdctl version
 
 ### Configure the etcd Server
 
+**Why this is required**: Before starting etcd, we need to configure its runtime environment. This involves setting up directories for configuration and data, placing TLS certificates, and determining the network identity (IP and hostname) that etcd will use to communicate.
+
 ```bash
 # Create etcd directories
+# /etc/etcd - stores TLS certificates and configuration
+# /var/lib/etcd - stores the actual database files (cluster state)
 sudo mkdir -p /etc/etcd /var/lib/etcd
+
+# Restrict permissions on data directory to prevent unauthorized access
+# 700 = only owner (root) can read/write/execute
 sudo chmod 700 /var/lib/etcd
 
-# Copy certificates
+# Copy certificates to etcd configuration directory
+# ca.pem - Certificate Authority cert (to verify peer and client certificates)
+# kubernetes.pem - Server certificate (proves etcd's identity to clients)
+# kubernetes-key.pem - Private key for the server certificate
 sudo cp ca.pem kubernetes-key.pem kubernetes.pem /etc/etcd/
 
 # Get the internal IP address
+# etcd needs to know its own IP to advertise to clients and cluster members
+# eth0 is the primary network interface in Azure VMs
 INTERNAL_IP=$(ip addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
 echo "Internal IP: $INTERNAL_IP"
 
 # Set etcd name
+# Each etcd member needs a unique name within the cluster
+# Using the short hostname (vm-control-plane) as the identifier
 ETCD_NAME=$(hostname -s)
 echo "ETCD Name: $ETCD_NAME"
 ```
 
 Create the `etcd.service` systemd unit file:
+
+**Why this is required**: systemd is the init system on Ubuntu that manages services. This unit file tells systemd how to start, stop, and restart etcd as a system service that will automatically start on boot.
+
+**Understanding the etcd flags**:
+- `--name`: Unique identifier for this etcd member
+- `--cert-file` / `--key-file`: Server certificate for client connections (API server, etcdctl)
+- `--peer-cert-file` / `--peer-key-file`: Certificate for peer-to-peer communication (between etcd nodes)
+- `--trusted-ca-file`: CA certificate to verify client certificates
+- `--peer-trusted-ca-file`: CA certificate to verify peer certificates
+- `--peer-client-cert-auth`: Require client certificates from peer connections
+- `--client-cert-auth`: Require client certificates from client connections (API server must authenticate)
+- `--listen-client-urls`: Where etcd listens for client connections (both external IP and localhost)
+- `--advertise-client-urls`: URL that etcd advertises to clients (external IP only)
+- `--listen-peer-urls`: Where etcd listens for peer connections (port 2380)
+- `--initial-advertise-peer-urls`: URL etcd uses to communicate with other cluster members
+- `--initial-cluster`: List of all cluster members (just one in our single-node setup)
+- `--initial-cluster-token`: Unique token to prevent accidental joining of separate clusters
+- `--initial-cluster-state new`: This is a new cluster (not joining an existing one)
+- `--data-dir`: Where etcd stores its database
+
+**Why listen on both IPs**: `https://127.0.0.1:2379` allows the API server (running on the same machine) to connect via localhost for security and efficiency. `https://${INTERNAL_IP}:2379` allows remote administration and potential multi-node expansion.
 
 ```bash
 cat <<EOF | sudo tee /etc/systemd/system/etcd.service
@@ -71,6 +112,13 @@ EOF
 
 ### Start the etcd Server
 
+**Why this is required**: After creating the systemd service file, we need to tell systemd to reload its configuration, enable the service to start on boot, and actually start the etcd process.
+
+**Understanding the systemd commands**:
+- `daemon-reload`: Reloads all systemd unit files (so it sees our new etcd.service file)
+- `enable etcd`: Creates symlinks so etcd starts automatically when the system boots
+- `start etcd`: Starts the etcd service immediately
+
 ```bash
 # Reload systemd and start etcd
 sudo systemctl daemon-reload
@@ -81,6 +129,8 @@ sudo systemctl start etcd
 > Remember to run the above commands on the control plane instance: `vm-control-plane`.
 
 ## Verification
+
+**Why this is important**: Verification ensures etcd is running correctly before proceeding to install the Kubernetes control plane components. The API server will fail to start if it cannot connect to etcd. Catching issues now saves time debugging later.
 
 ### Check etcd Service Status
 
@@ -106,6 +156,8 @@ sudo journalctl -u etcd
 ```
 
 ### Test etcd Functionality
+
+**Why this is required**: Actually connecting to etcd with `etcdctl` proves that TLS is configured correctly, certificates are valid, and the etcd API is responding. This validates the entire etcd setup before moving forward.
 
 List the etcd cluster members:
 
@@ -333,6 +385,8 @@ openssl x509 -in /etc/etcd/kubernetes.pem -text -noout | grep -A 5 "Subject Alte
 ```
 
 ### Test etcd Data Operations
+
+**Why this is important**: Testing read and write operations confirms that etcd can actually store and retrieve data. This is the core functionality Kubernetes relies on. If these operations fail, the cluster won't be able to store pod specifications, node information, or any other state.
 
 Test basic etcd operations:
 

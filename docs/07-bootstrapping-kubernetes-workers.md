@@ -2,7 +2,13 @@
 
 In this lab you will bootstrap two Kubernetes worker nodes. The following components will be installed on each node: [runc](https://github.com/opencontainers/runc), [container networking plugins](https://github.com/containernetworking/cni), [containerd](https://github.com/containerd/containerd), [kubelet](https://kubernetes.io/docs/admin/kubelet), and [kube-proxy](https://kubernetes.io/docs/concepts/cluster-administration/proxies).
 
+**Why this matters**: Worker nodes are where your actual application workloads run. While the control plane makes decisions, workers execute those decisions by running pods. Each worker node has three main responsibilities: running containers (containerd/runc), managing pod lifecycle (kubelet), and handling network traffic (kube-proxy + CNI). Without functioning worker nodes, your cluster is just a brain with no hands—it can make decisions but can't execute any actual work.
+
+![Kubernetes Worker Node Architecture](img/07-worker.png)
+
 ## Prerequisites
+
+**Why this is required**: Worker nodes must be configured identically to ensure consistent behavior across the cluster. When the scheduler assigns a pod to a node, it expects all nodes to have the same basic capabilities. Running these commands on both workers ensures they can both run pods, connect to the API server, and participate in cluster networking.
 
 The commands in this lab must be run on each worker instance: `vm-worker-1` and `vm-worker-2`. Login to each worker instance using SSH from the jumpbox.
 
@@ -20,6 +26,8 @@ ssh azureuser@10.0.3.21
 
 ## Provisioning a Kubernetes Worker Node
 
+**Why this is required**: Worker nodes need specific system packages to support Kubernetes networking and debugging capabilities. These are not part of the default Ubuntu installation.
+
 Install the OS dependencies:
 
 ```bash
@@ -27,9 +35,23 @@ sudo apt-get update
 sudo apt-get -y install socat conntrack ipset
 ```
 
-> The socat binary enables support for the `kubectl port-forward` command.
+**Understanding the dependencies**:
+- **socat**: Socket relay utility that enables `kubectl port-forward` (lets you tunnel traffic from your machine to a pod)
+- **conntrack**: Connection tracking tool for iptables—kube-proxy uses this to track network connections for service load balancing
+- **ipset**: Efficiently manage sets of IP addresses in iptables rules—improves performance when you have many services
 
 ### Download and Install Worker Binaries
+
+**Why this is required**: Worker nodes need a complete container runtime stack plus Kubernetes components. This is more complex than the control plane because workers actually run containers.
+
+**Understanding what we're downloading**:
+- **crictl**: Command-line tool for interacting with CRI-compliant container runtimes (for debugging)
+- **runc**: Low-level container runtime that actually creates and runs containers (OCI-compliant)
+- **cni-plugins**: Network plugins that set up networking for containers (bridge, loopback, etc.)
+- **containerd**: High-level container runtime that manages container lifecycle and images
+- **kubectl**: CLI tool for interacting with the cluster (useful for local debugging)
+- **kube-proxy**: Network proxy that maintains iptables rules for service load balancing
+- **kubelet**: Primary node agent that manages pods and talks to the API server
 
 ```bash
 wget -q --show-progress --https-only --timestamping https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.28.0/crictl-v1.28.0-linux-amd64.tar.gz https://github.com/opencontainers/runc/releases/download/v1.1.8/runc.amd64 https://github.com/containernetworking/plugins/releases/download/v1.3.0/cni-plugins-linux-amd64-v1.3.0.tgz https://github.com/containerd/containerd/releases/download/v1.7.2/containerd-1.7.2-linux-amd64.tar.gz https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kubectl https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kube-proxy https://storage.googleapis.com/kubernetes-release/release/v1.28.0/bin/linux/amd64/kubelet
@@ -37,7 +59,16 @@ wget -q --show-progress --https-only --timestamping https://github.com/kubernete
 
 Create the installation directories:
 
+**Why this is required**: Each component needs specific directories for configuration, data, and runtime state. Following Linux Filesystem Hierarchy Standard conventions:
+
 ```bash
+# Create all required directories:
+# /etc/cni/net.d - CNI network configuration files
+# /opt/cni/bin - CNI plugin binaries
+# /var/lib/kubelet - Kubelet data (pod specs, volumes, etc.)
+# /var/lib/kube-proxy - kube-proxy configuration
+# /var/lib/kubernetes - Kubernetes certificates and secrets
+# /var/run/kubernetes - Runtime state and sockets
 sudo mkdir -p /etc/cni/net.d /opt/cni/bin /var/lib/kubelet /var/lib/kube-proxy /var/lib/kubernetes /var/run/kubernetes
 ```
 
@@ -75,6 +106,10 @@ EOF
 
 ### Configure CNI Networking
 
+**Why this is required**: CNI (Container Network Interface) plugins set up networking when containers start. Without CNI, pods on this node wouldn't be able to communicate with each other or with pods on other nodes. The CNI plugins create virtual network interfaces, assign IP addresses, and configure routes.
+
+**Understanding the architecture**: Each worker node gets a subset of the pod CIDR range (10.200.0.0/16). In a more advanced setup, each node would get a unique /24 subnet (e.g., worker-1 gets 10.200.1.0/24, worker-2 gets 10.200.2.0/24). For simplicity, we're using the full range on both nodes.
+
 Retrieve the Pod CIDR range for the current compute instance:
 
 ```bash
@@ -83,6 +118,14 @@ echo "Pod CIDR: $POD_CIDR"
 ```
 
 Create the `bridge` network configuration file:
+
+**Why this configuration**: The bridge plugin creates a Linux bridge (like a virtual switch) called `cnio0` on the node. All pod network interfaces connect to this bridge, allowing pods on the same node to communicate. The configuration also sets up IP masquerading (SNAT) so pods can reach external networks.
+
+**Understanding the settings**:
+- **isGateway: true**: Makes the bridge the default gateway for pods
+- **ipMasq: true**: Enables IP masquerading for traffic leaving the node (pods appear to have the node's IP)
+- **ipam.type: host-local**: IP addresses are allocated and tracked locally on this node
+- **routes**: All traffic (0.0.0.0/0) goes through the bridge gateway
 
 ```bash
 cat <<EOF | sudo tee /etc/cni/net.d/10-bridge.conf
@@ -106,6 +149,8 @@ EOF
 
 Create the `loopback` network configuration file:
 
+**Why this is required**: Every container needs a loopback interface (lo / 127.0.0.1) for local communication. Applications often bind to localhost or use it for health checks. This CNI plugin ensures the loopback interface is properly configured in each container's network namespace.
+
 ```bash
 cat <<EOF | sudo tee /etc/cni/net.d/99-loopback.conf
 {
@@ -117,6 +162,14 @@ EOF
 ```
 
 ### Configure containerd
+
+**Why this is required**: containerd is the high-level container runtime that kubelet talks to via the CRI (Container Runtime Interface). It manages the container lifecycle: pulling images, creating containers, starting/stopping them, and managing their resources. Without proper configuration, containerd won't know how to manage resource limits (CPU, memory) or integrate with CNI for networking.
+
+**Understanding cgroups**: Control groups (cgroups) are a Linux kernel feature that limits and isolates resource usage. There are two versions:
+- **cgroup v1**: Legacy system, uses cgroupfs driver
+- **cgroup v2**: Modern unified hierarchy, requires systemd driver
+
+The configuration must match your system's cgroup version or container resource limits won't work correctly.
 
 Create the `containerd` configuration file:
 
@@ -177,6 +230,16 @@ EOF
 
 Create the `containerd.service` systemd unit file:
 
+**Why this configuration**: The systemd unit file defines how containerd runs as a system service.
+
+**Understanding the key settings**:
+- **ExecStartPre=-/sbin/modprobe overlay**: Loads the overlay filesystem kernel module (used for container layers)
+- **Type=notify**: containerd will signal systemd when it's ready to accept connections
+- **Delegate=yes**: Delegates cgroup management to containerd (critical for resource limits)
+- **KillMode=process**: Only kills the main containerd process, not child containers
+- **LimitNOFILE/LimitNPROC**: Removes limits on file descriptors and processes (containers need many)
+- **TasksMax=infinity**: No limit on number of tasks (threads/processes)
+
 ```bash
 cat <<EOF | sudo tee /etc/systemd/system/containerd.service
 [Unit]
@@ -205,6 +268,17 @@ EOF
 
 ### Configure the Kubelet
 
+**Why this is required**: The kubelet is the most important component on a worker node. It's the primary node agent that:
+- Registers the node with the API server
+- Watches for pods assigned to this node
+- Pulls container images and starts containers via containerd
+- Monitors pod and container health
+- Reports node and pod status back to the API server
+- Mounts volumes into pods
+- Executes liveness/readiness probes
+
+Without a properly configured kubelet, the node won't be able to join the cluster or run any pods.
+
 ```bash
 # Create required directories
 sudo mkdir -p /var/lib/kubelet/
@@ -231,6 +305,18 @@ sudo cp ca.pem /var/lib/kubernetes/
 ```
 
 Create the `kubelet-config.yaml` configuration file:
+
+**Why this configuration**: The kubelet config file centralizes all kubelet settings in one place (rather than using many command-line flags).
+
+**Understanding key settings**:
+- **authentication.webhook**: Delegates authentication to the API server (for `kubectl exec`, `logs`, etc.)
+- **authorization.mode: Webhook**: API server decides what actions are allowed on this kubelet
+- **cgroupDriver**: Must match containerd's cgroup driver (systemd for cgroup v2, cgroupfs for v1)
+- **clusterDNS**: IP of the cluster DNS service (CoreDNS/kube-dns) that pods will use
+- **containerRuntimeEndpoint**: Socket where containerd listens (kubelet connects here via CRI)
+- **registerNode: true**: Automatically registers this node with the API server
+- **resolvConf**: DNS resolver config to use for pod DNS resolution
+- **tlsCertFile/tlsPrivateKeyFile**: Node's identity certificate for API server to connect to kubelet
 
 ```bash
 # Set required variables
@@ -294,11 +380,24 @@ EOF
 
 ### Configure the Kubernetes Proxy
 
+**Why this is required**: kube-proxy implements the Kubernetes Service abstraction. When you create a Service, kube-proxy sets up iptables rules (or IPVS rules) so that traffic to the service's ClusterIP is load-balanced across the service's pod endpoints. Without kube-proxy:
+- Service IPs wouldn't work
+- `kubectl exec` into pods and using service DNS names would fail
+- Cross-pod communication via services would be broken
+
+**How it works**: kube-proxy watches the API server for Service and Endpoints changes, then updates iptables rules on the node to redirect traffic destined for service IPs to actual pod IPs.
+
 ```bash
 sudo cp kube-proxy.kubeconfig /var/lib/kube-proxy/kubeconfig
 ```
 
 Create the `kube-proxy-config.yaml` configuration file:
+
+**Understanding the settings**:
+- **mode: "iptables"**: Use iptables for service routing (alternatives: ipvs, userspace)
+- **clusterCIDR**: The pod CIDR range—kube-proxy uses this to determine if traffic should be masqueraded
+
+**Why iptables mode**: It's the most common and well-tested mode. IPVS mode offers better performance at scale (10,000+ services) but requires additional kernel modules.
 
 ```bash
 cat <<EOF | sudo tee /var/lib/kube-proxy/kube-proxy-config.yaml
@@ -331,6 +430,13 @@ EOF
 
 ### Start the Worker Services
 
+**Why this is required**: Now that all configuration is in place, we start the worker services. The startup order matters:
+1. **containerd** starts first (kubelet depends on it)
+2. **kubelet** starts and connects to containerd and the API server
+3. **kube-proxy** starts and sets up initial iptables rules
+
+The `enable` command ensures services auto-start on boot (critical for node reboots).
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable containerd kubelet kube-proxy
@@ -340,6 +446,8 @@ sudo systemctl start containerd kubelet kube-proxy
 > Remember to run the above commands on each worker node: `vm-worker-1` and `vm-worker-2`.
 
 ## Verification
+
+**Why this is important**: Verification ensures all worker components are functioning before attempting to deploy workloads. The nodes must successfully register with the control plane and show as "Ready" before they can accept pod assignments from the scheduler.
 
 ### Check Service Status
 
@@ -360,8 +468,8 @@ sudo journalctl -u kube-proxy
 From the jumpbox, list the registered Kubernetes nodes:
 
 ```bash
-# Ensure you have kubectl configured (from previous labs)
-kubectl get nodes --kubeconfig certificates/admin.kubeconfig
+# This uses the kubectl configuration from step 06
+kubectl get nodes
 ```
 
 You should see output similar to:
@@ -379,7 +487,7 @@ vm-worker-2    Ready    <none>   30s   v1.28.0
 Get detailed information about the nodes:
 
 ```bash
-kubectl describe nodes --kubeconfig certificates/admin.kubeconfig
+kubectl describe nodes
 ```
 
 ### Verify Container Runtime
@@ -626,60 +734,154 @@ From the jumpbox, create a test deployment to verify the workers:
 
 ```bash
 # Create a test deployment
-kubectl create deployment test-nginx --image=nginx --kubeconfig certificates/admin.kubeconfig
+kubectl create deployment test-nginx --image=nginx
 
 # Check if pods are scheduled
-kubectl get pods -o wide --kubeconfig certificates/admin.kubeconfig
+kubectl get pods -o wide
 
 # Wait for the pod to be ready
-kubectl wait --for=condition=Ready pod -l app=test-nginx --kubeconfig certificates/admin.kubeconfig
+kubectl wait --for=condition=Ready pod -l app=test-nginx
 
 # Clean up
-kubectl delete deployment test-nginx --kubeconfig certificates/admin.kubeconfig
+kubectl delete deployment test-nginx
 ```
 
 ## Understanding Worker Node Components
 
+**Why this matters**: Understanding how worker components interact helps you troubleshoot networking issues, debug pod failures, and optimize node performance. The container runtime stack has multiple layers, each with a specific responsibility.
+
+### The Container Runtime Stack (Layered Architecture)
+
+**High-level view**: When kubelet needs to start a pod:
+1. **kubelet** receives pod spec from API server
+2. **kubelet** calls **containerd** via CRI (gRPC over Unix socket)
+3. **containerd** pulls the image (if needed), prepares the container
+4. **containerd** calls CNI plugins to set up networking
+5. **containerd** calls **runc** to actually create/start the container
+6. **runc** uses Linux kernel features (namespaces, cgroups) to isolate the container
+7. Container runs; **containerd** monitors it and reports status back to **kubelet**
+8. **kubelet** reports pod status to the API server
+
 ### containerd
-- **Purpose**: Container runtime for running containers
-- **Responsibilities**: Container lifecycle management, image management
+- **Purpose**: High-level container runtime (CRI-compliant)
+- **Responsibilities**: 
+  - Container lifecycle management (create, start, stop, delete)
+  - Image management (pull, store, list images)
+  - Streaming APIs (exec, attach, port-forward)
+  - CNI integration (calls CNI plugins for networking)
 - **Configuration**: `/etc/containerd/config.toml`
-- **Socket**: `/var/run/containerd/containerd.sock`
+- **Socket**: `/var/run/containerd/containerd.sock` (kubelet connects here)
+- **Key insight**: containerd is a daemon that sits between kubelet and runc, providing a stable API
+
+### runc
+- **Purpose**: Low-level container runtime (OCI-compliant)
+- **Responsibilities**:
+  - Creates Linux namespaces (PID, network, mount, UTS, IPC)
+  - Sets up cgroups for resource limits
+  - Configures security (capabilities, seccomp, AppArmor)
+  - Executes the container process
+- **Not a daemon**: It's a CLI tool that containerd executes as needed
+- **Spec**: Follows OCI (Open Container Initiative) runtime specification
 
 ### kubelet
 - **Purpose**: Primary node agent that manages pods and containers
-- **Responsibilities**: Pod lifecycle, health checks, volume mounting, reporting to API server
+- **Responsibilities**: 
+  - **Registration**: Registers node with API server, sends heartbeats
+  - **Pod lifecycle**: Watches for pods assigned to this node, starts/stops them
+  - **Health monitoring**: Runs liveness/readiness probes, restarts failed containers
+  - **Volume management**: Mounts volumes (ConfigMaps, Secrets, PVs) into pods
+  - **Resource reporting**: Reports node capacity and allocatable resources
+  - **Status reporting**: Updates pod and node status in API server
+  - **Admission**: Runs admission plugins (e.g., reject pods that exceed node resources)
 - **Configuration**: `/var/lib/kubelet/kubelet-config.yaml`
-- **Certificates**: Node-specific client certificates
+- **Certificates**: Node-specific client certificate for authenticating to API server
+- **API**: Exposes an HTTPS API (port 10250) for the API server to retrieve logs, exec into pods, etc.
 
 ### kube-proxy
-- **Purpose**: Network proxy running on each node
-- **Responsibilities**: Service load balancing, iptables rule management
+- **Purpose**: Network proxy that implements Kubernetes Service abstraction
+- **Responsibilities**: 
+  - **Service watching**: Watches API server for Service and Endpoints changes
+  - **Rule management**: Updates iptables (or IPVS) rules to route service traffic
+  - **Load balancing**: Distributes traffic across service endpoints (round-robin in iptables mode)
+  - **Session affinity**: Supports sticky sessions (ClientIP affinity)
 - **Configuration**: `/var/lib/kube-proxy/kube-proxy-config.yaml`
-- **Mode**: iptables (default)
+- **Mode**: iptables (default)—alternatives are IPVS (better performance) and userspace (legacy)
+- **How it works**: Creates iptables rules like:
+  - Traffic to ClusterIP → randomly select one pod IP
+  - Traffic from pods → SNAT to node IP (for external traffic)
 
 ### CNI (Container Network Interface)
-- **Purpose**: Container networking specification and plugins
-- **Configuration**: `/etc/cni/net.d/`
-- **Plugins**: Bridge, loopback, and other networking plugins
-- **CIDR**: Pod subnet allocation
+- **Purpose**: Standard interface for configuring container networking
+- **Configuration**: `/etc/cni/net.d/` (network configs in priority order: 10-bridge.conf, 99-loopback.conf)
+- **Plugins**: 
+  - **bridge**: Creates a Linux bridge and connects containers to it
+  - **loopback**: Configures the loopback interface (127.0.0.1) in each container
+  - **host-local**: IPAM plugin that allocates IP addresses from a local subnet
+- **CIDR**: Pod subnet allocation (10.200.0.0/16 in our setup)
+- **How it's called**: containerd executes CNI plugins (as separate processes) when creating/deleting containers
+- **Key insight**: CNI is not a daemon—it's a specification and a set of executables that runtimes call
+
+### How They Work Together: Pod Creation Example
+
+1. **Scheduler** assigns pod to this node (updates pod spec with nodeName)
+2. **Kubelet** sees new pod assigned to it (via API server watch)
+3. **Kubelet** calls containerd: "Create this pod with these containers"
+4. **Containerd** pulls images if needed
+5. **Containerd** calls CNI bridge plugin: "Set up networking for this pod"
+6. **CNI plugin** creates veth pair, attaches to bridge, assigns IP, sets routes
+7. **Containerd** calls runc: "Create container with this network namespace"
+8. **Runc** creates namespaces, cgroups, starts container process
+9. **Kubelet** runs readiness probe, waits for pod to be ready
+10. **Kubelet** updates pod status in API server: "Pod is Running"
+11. **Endpoint controller** (in control plane) adds pod IP to Service endpoints
+12. **Kube-proxy** sees new endpoint, updates iptables rules
+13. Pod is now receiving traffic via Service
+
+**Key architectural insight**: Each component has a single, well-defined responsibility. This modularity makes the system maintainable and allows you to swap components (e.g., replace containerd with CRI-O, replace bridge CNI with Calico or Cilium).
 
 ## Security Considerations
 
+**Why this matters**: Worker nodes are where untrusted workloads run. A compromised pod could attempt to escape its container, access other pods' data, or attack the node itself. Multiple layers of security work together to limit the blast radius of compromised workloads.
+
 ### Certificate-based Authentication
-- Each kubelet uses a unique certificate
-- Node authorization ensures kubelets can only access their own resources
-- Mutual TLS between all components
+- Each kubelet uses a unique certificate (CN = system:node:<nodeName>)
+- Node authorization ensures kubelets can only access their own resources (can't read secrets from other nodes)
+- Mutual TLS between all components (kubelet ↔ API server, kubelet ↔ containerd)
+- **Why it matters**: If an attacker compromises one node, they can't use that node's certificate to access resources on other nodes. Node Authorization (the authorization mode we configured on the API server) enforces this boundary.
 
 ### Network Security
-- CNI provides network isolation between pods
-- iptables rules control traffic flow
-- Service networking is separate from pod networking
+- CNI provides network isolation between pods (each pod has its own network namespace)
+- iptables rules control traffic flow (kube-proxy creates rules, netfilter enforces them)
+- Service networking is separate from pod networking (ClusterIP range 10.100.0.0/16 vs Pod range 10.200.0.0/16)
+- **Why it matters**: Network namespaces prevent pods from sniffing each other's traffic. A compromised pod can only see its own network interfaces by default. Network policies (when installed) can further restrict pod-to-pod communication.
 
-### Runtime Security
-- containerd runs containers in isolated namespaces
-- runc provides low-level container runtime
-- AppArmor/SELinux can provide additional security
+### Container Runtime Security
+- **containerd** runs containers in isolated namespaces (PID, network, mount, UTS, IPC, user)
+- **runc** provides low-level container runtime with security features:
+  - **Capabilities**: Drops dangerous Linux capabilities (e.g., CAP_SYS_ADMIN) by default
+  - **Seccomp**: Restricts system calls containers can make
+  - **AppArmor/SELinux**: Mandatory Access Control (if enabled on the host)
+  - **Read-only root filesystem**: Can be enforced per-container
+- **cgroups**: Limit resources (CPU, memory, I/O) to prevent DoS attacks
+- **Why it matters**: Even if an attacker gains code execution inside a container, these layers prevent them from breaking out to the host. For example, without CAP_SYS_ADMIN, they can't mount filesystems or load kernel modules.
+
+### kubelet Security
+- **Anonymous auth disabled**: All requests must present a valid certificate
+- **Webhook authorization**: API server decides what operations are allowed on this kubelet
+- **Read-only port disabled**: The legacy insecure port (10255) is not exposed
+- **Node restriction admission**: Prevents kubelets from modifying resources they shouldn't access
+- **Why it matters**: The kubelet API is powerful (can exec into any pod on the node). Requiring authentication and authorization prevents unauthorized access to pod data and prevents lateral movement after compromising a single pod.
+
+### Defense in Depth
+The security model assumes pods may be compromised and uses layers of defense:
+1. **Namespace isolation**: Basic separation (network, PID, mount)
+2. **Dropped capabilities**: Removes dangerous privileges
+3. **Seccomp/AppArmor**: Restricts system calls and file access
+4. **Network policies**: Limits pod-to-pod communication (when installed)
+5. **RBAC**: Limits what service accounts can do via API
+6. **Pod Security Standards**: Prevents pods from requesting dangerous privileges (PSS replaces PSP in Kubernetes 1.25+)
+
+**Key insight**: Security is not a single feature but a collection of mechanisms. Even if an attacker bypasses one layer (e.g., escapes the container), other layers (node authorization, network policies, audit logging) limit what they can do.
 
 ## Troubleshooting
 

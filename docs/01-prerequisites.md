@@ -24,7 +24,7 @@ All VMs run Ubuntu 22.04 LTS and use the `azureuser` account.
 ### Step 1: Connect to Jumpbox via Azure Bastion
 
 1. Open the Azure Portal
-2. Navigate to your resource group `rg-k8s-the-hard-way`
+2. Navigate to your resource group `rg-<student-name>-k8s-hard-way` (e.g., `rg-john-k8s-hard-way`)
 3. Click on the `vm-jumpbox` virtual machine
 4. Click "Connect" and select "Bastion"
 5. Use the username `azureuser` and SSH key authentication
