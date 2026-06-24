@@ -1,12 +1,24 @@
 # Provisioning Pod Network Routes
 
-In this lab you will create network routes for the Pod CIDR ranges. This will ensure that Pods running on different worker nodes can communicate with each other.
+In this lab you will explore the pod networking configuration and understand its current limitations.
 
-> In a production environment, you would typically use a CNI plugin like Calico, Flannel, or Azure CNI to handle pod networking automatically. This lab demonstrates the underlying networking concepts by configuring routes manually.
+**Important Understanding**: This "Kubernetes the Hard Way" setup uses a simplified pod networking approach where all worker nodes share the same pod CIDR (10.200.0.0/16). This means:
+- ✅ Pods on the **same node** can communicate with each other
+- ❌ Pods on **different nodes** cannot communicate directly
+- ✅ Pods can reach the internet via NAT Gateway (TCP connectivity works)
+- ✅ DNS resolution works (CoreDNS was deployed in chapter 07)
+- ✅ Services work (kube-proxy creates iptables rules)
+
+**Why this limitation exists**: To enable cross-node pod communication, you would need:
+1. Unique pod CIDR per node (e.g., worker-1: 10.200.1.0/24, worker-2: 10.200.2.0/24)
+2. Azure Route Table with routes directing each subnet to the correct worker node
+3. Reconfiguration of kubelet and CNI on each node
+
+**Production environments**: Use a CNI plugin (Calico, Flannel, Azure CNI, Cilium, etc.) that handles cross-node networking automatically using overlay networks or cloud-native routing. This lab focuses on understanding the core Kubernetes components rather than implementing full production networking.
 
 ## The Routing Table
 
-In this section you will gather the information required to create routes in the virtual network.
+In this section you will examine the current network configuration and understand why cross-node pod communication doesn't work.
 
 Print the internal IP address and Pod CIDR range for each worker instance:
 
@@ -25,14 +37,16 @@ echo "===================="
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.podCIDR}{"\n"}{end}'
 ```
 
-Since we're using a simple bridge network configuration, each node will use the same Pod CIDR (10.200.0.0/16). In a production setup, each node would typically get a unique subnet.
+**Expected result**: The pod CIDR will be **empty or undefined** because we configured the kubelet with a hardcoded pod CIDR (10.200.0.0/16) in the kubelet-config.yaml, rather than letting the API server assign unique subnets per node.
+
+**What this means**: Both nodes think they own the entire 10.200.0.0/16 range, so when a pod on worker-1 tries to reach 10.200.0.x, it assumes that IP is local to its own bridge and never forwards the packet to worker-2.
 
 ## Network Architecture Overview
 
 Our current network setup:
 
 - **VM Network**: 10.0.3.0/24 (Kubernetes subnet)
-- **Pod Network**: 10.200.0.0/16 (Shared across all nodes)
+- **Pod Network**: 10.200.0.0/16 (Shared/overlapping across all nodes) ⚠️
 - **Service Network**: 10.100.0.0/16 (Virtual network for services)
 
 ```
@@ -45,44 +59,80 @@ Our current network setup:
 │  │ Control Plane │  │   Worker-1    │  │   Worker-2   ││
 │  │  10.0.3.10    │  │  10.0.3.20    │  │  10.0.3.21   ││
 │  │               │  │               │  │              ││
-│  │  Pod Network: │  │  Pod Network: │  │ Pod Network: ││
-│  │ 10.200.0.0/16 │  │ 10.200.0.0/16 │  │10.200.0.0/16││
+│  │               │  │ Pod Network:  │  │ Pod Network: ││
+│  │               │  │ 10.200.0.0/16 │  │10.200.0.0/16 ││  ⚠️ SAME CIDR
+│  │               │  │ (cnio0 bridge)│  │(cnio0 bridge)││
 │  └───────────────┘  └───────────────┘  └──────────────┘│
 └─────────────────────────────────────────────────────────┘
+
+⚠️ Problem: Both worker nodes claim ownership of the entire 10.200.0.0/16 range.
+   This causes cross-node pod traffic to be dropped (never leaves the source node).
 ```
 
-## Configure Pod Network Routes
+## Understanding Why Cross-Node Routing Doesn't Work
 
-Since we're using a simple bridge network where all nodes share the same Pod CIDR, we need to ensure proper routing between nodes.
+**Why Azure Route Tables are needed (but not implemented here)**:
 
-### Option 1: Using Azure Route Tables (Recommended for Production)
+For cross-node pod communication to work, you would need:
 
-For a production environment, you would create Azure Route Tables:
+### 1. Unique Pod CIDRs Per Node
+
+Each node should have its own subnet:
+- Worker-1: 10.200.1.0/24 (256 IPs for pods)
+- Worker-2: 10.200.2.0/24 (256 IPs for pods)
+
+This requires:
+- Configuring the API server with `--allocate-node-cidrs=true` and `--cluster-cidr=10.200.0.0/16`
+- Letting the controller manager assign unique /24 subnets to each node
+- Updating kubelet configs to use the assigned CIDR instead of hardcoded values
+- Restarting kubelets and recreating CNI configuration
+
+### 2. Azure Route Table with Per-Node Routes
+
+Once unique CIDRs are assigned, create Azure routes:
 
 ```bash
-# This is for demonstration - shows how you would configure Azure routes
-# Note: This requires additional Azure permissions and is not needed for our lab
+# Example of what you would need (NOT running this in the lab)
 
 # Create a route table
 az network route-table create \
-  --resource-group rg-k8s-the-hard-way \
+  --resource-group rg-<student-name>-k8s-hard-way \
   --name rt-k8s-pods \
-  --location westeurope
+  --location swedencentral
 
-# Create routes for each worker node (example)
-# In our simple setup, this isn't necessary as we're using a shared CIDR
+# Create route for worker-1's pod subnet
+az network route-table route create \
+  --resource-group rg-<student-name>-k8s-hard-way \
+  --route-table-name rt-k8s-pods \
+  --name route-worker-1-pods \
+  --address-prefix 10.200.1.0/24 \
+  --next-hop-type VirtualAppliance \
+  --next-hop-ip-address 10.0.3.20
 
-# Associate route table with subnet
+# Create route for worker-2's pod subnet
+az network route-table route create \
+  --resource-group rg-<student-name>-k8s-hard-way \
+  --route-table-name rt-k8s-pods \
+  --name route-worker-2-pods \
+  --address-prefix 10.200.2.0/24 \
+  --next-hop-type VirtualAppliance \
+  --next-hop-ip-address 10.0.3.21
+
+# Associate route table with the Kubernetes subnet
 az network vnet subnet update \
-  --resource-group rg-k8s-the-hard-way \
+  --resource-group rg-<student-name>-k8s-hard-way \
   --vnet-name vnet-k8s \
   --name snet-k8s \
   --route-table rt-k8s-pods
 ```
 
-### Option 2: Node-level Routing (Our Lab Setup)
+**Why we're not doing this**: This lab focuses on understanding core Kubernetes components (API server, kubelet, kube-proxy, etc.) rather than cloud networking complexity. Implementing proper pod routing would require significant reconfiguration and cloud-specific knowledge that distracts from learning Kubernetes fundamentals.
 
-Since we're using a simple bridge configuration, routing is handled at the node level by the CNI bridge plugin and iptables.
+**Production approach**: Use a CNI plugin that handles this automatically:
+- **Calico**: Uses BGP or VXLAN overlays
+- **Flannel**: Uses VXLAN overlays
+- **Azure CNI**: Integrates directly with Azure networking
+- **Cilium**: Uses eBPF and can work with or without overlays
 
 Verify the current routing configuration on each worker node:
 
@@ -186,6 +236,8 @@ echo "test-pod-2: $POD2_IP"
 
 ### Test Pod-to-Pod Connectivity
 
+**⚠️ Expected Result**: Cross-node pod connectivity **will NOT work** in this lab setup.
+
 ```bash
 echo ""
 echo "Testing Pod-to-Pod Connectivity:"
@@ -199,6 +251,12 @@ echo ""
 echo "Testing from test-pod-2 ($POD2_IP) to test-pod-1 ($POD1_IP):"
 kubectl exec test-pod-2 -- ping -c 3 $POD1_IP
 ```
+
+**Expected output**: `100% packet loss` - This is **normal and expected**.
+
+**Why it fails**: Both nodes think they own the entire 10.200.0.0/16 range. When test-pod-1 tries to ping 10.200.0.4 (on worker-2), worker-1's routing table says "10.200.0.0/16 is local to cnio0 bridge", so it never forwards the packet off the node.
+
+**What WOULD work**: If the pods were on the same node, they could communicate via the local bridge.
 
 ### Test Pod-to-Node Connectivity
 
@@ -226,21 +284,38 @@ kubectl exec test-pod-2 -- ping -c 2 10.0.3.21
 
 ### Test Internet Connectivity
 
+**Note**: CoreDNS was deployed in chapter 07, so DNS resolution should work. ICMP ping may be blocked by Azure (this is normal).
+
 ```bash
 echo ""
 echo "Testing Internet Connectivity:"
 echo "============================="
 
-# Test outbound internet access (should work through NAT Gateway)
-echo "From test-pod-1 to google.com:"
-kubectl exec test-pod-1 -- nslookup google.com
-kubectl exec test-pod-1 -- ping -c 2 8.8.8.8
+# Check DNS configuration
+echo "Pod DNS configuration:"
+kubectl exec test-pod-1 -- cat /etc/resolv.conf
 
+# Test DNS resolution to external domains
 echo ""
-echo "From test-pod-2 to google.com:"
+echo "Testing external DNS resolution:"
+kubectl exec test-pod-1 -- nslookup google.com
 kubectl exec test-pod-2 -- nslookup google.com
-kubectl exec test-pod-2 -- ping -c 2 8.8.8.8
+
+# Test connectivity to external IP using TCP
+echo ""
+echo "Testing TCP connectivity to 8.8.8.8:53:"
+kubectl exec test-pod-1 -- timeout 3 nc -zv 8.8.8.8 53
+
+# OPTIONAL: Try ICMP ping (may fail - this is normal in Azure)
+echo ""
+echo "ICMP test (may fail - this is normal in Azure):"
+kubectl exec test-pod-1 -- ping -c 2 8.8.8.8 || echo "ICMP blocked (expected in Azure)"
 ```
+
+**Expected results**:
+- ✅ DNS resolution works (google.com resolves to IP addresses)
+- ✅ TCP connectivity to external IPs works
+- ❌ ICMP ping may fail (Azure blocks outbound ICMP - this is normal)
 
 ## Service Network Testing
 
@@ -426,9 +501,9 @@ Pod-1 (10.200.0.x)     Pod-2 (10.200.0.y)
 ### Traffic Patterns
 
 - **Pod-to-Pod (same node)**: Bridge forwarding
-- **Pod-to-Pod (different nodes)**: Routing via node network
+- **Pod-to-Pod (different nodes)**: Routing via node network (not working in this lab - see Summary)
 - **Pod-to-Service**: kube-proxy iptables rules
-- **Pod-to-Internet**: NAT through Azure NAT Gateway
+- **Pod-to-Internet**: NAT through Azure NAT Gateway (HTTP/DNS work; ICMP often blocked)
 
 ## Cleanup Test Resources
 
@@ -485,14 +560,53 @@ spec:
 
 ## Summary
 
-✅ **Pod networking configured** - Pods can communicate across nodes  
-✅ **Service networking verified** - ClusterIP services work correctly  
-✅ **DNS resolution working** - Service discovery is functional  
-✅ **Internet connectivity** - Pods can reach external services  
-✅ **Network troubleshooting** - Debug tools are available  
+### What Works in This Lab Setup ✅
 
-Your Kubernetes cluster now has fully functional pod networking! Pods can communicate with each other, resolve services via DNS, and access external resources through the Azure NAT Gateway.
+- ✅ **Pods can be scheduled** - Scheduler places pods on available worker nodes
+- ✅ **Pods on the same node communicate** - Local bridge networking works
+- ✅ **Pod-to-node connectivity** - Pods can reach worker nodes and control plane
+- ✅ **Internet connectivity** - Pods can reach external IPs via NAT Gateway (TCP connectivity verified)
+- ✅ **Service networking** - kube-proxy iptables rules enable ClusterIP services
+- ✅ **Network isolation** - Each pod has its own network namespace
+- ✅ **DNS resolution** - CoreDNS provides service discovery and external DNS
 
-The cluster is now ready for comprehensive testing and deployment of applications.
+### What Doesn't Work ❌
+
+- ❌ **Cross-node pod communication** - Pods on different nodes cannot communicate directly
+  - **Why**: Both nodes use the same pod CIDR (10.200.0.0/16) without Azure routes
+  - **Impact**: Multi-replica deployments may have issues if pods are on different nodes
+  - **Workaround**: Services still work (kube-proxy handles routing via node IPs)
+
+### Understanding the Limitation
+
+This limitation is **intentional for this lab**. "Kubernetes the Hard Way" focuses on understanding core Kubernetes components, not cloud networking complexity.
+
+**What you learned**:
+- How CNI plugins configure pod networking
+- How bridge networking works within a node
+- How iptables provides NAT for pods
+- Why unique pod CIDRs and route tables are needed for cross-node communication
+
+**Production environments** solve this with CNI plugins:
+- **Calico**: Layer 3 networking with BGP or VXLAN overlays
+- **Flannel**: Simple VXLAN overlay network
+- **Azure CNI**: Direct integration with Azure VNet (each pod gets an Azure IP)
+- **Cilium**: eBPF-based networking with advanced features
+- **Weave Net**: Mesh overlay network
+
+These plugins automatically:
+- Assign unique pod CIDRs per node
+- Configure routing (via overlays or cloud routes)
+- Handle network policies
+- Provide network observability
+
+### Next Steps
+
+Your cluster can still run applications successfully:
+- Services provide stable endpoints (work across nodes)
+- Single-replica deployments work fine
+- Multi-replica deployments work if you use services to communicate
+
+Proceed to the smoke test to verify the cluster's functionality within these known limitations.
 
 Next: [Smoke Test](10-smoke-test.md)

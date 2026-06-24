@@ -40,6 +40,27 @@ sudo apt-get -y install socat conntrack ipset
 - **conntrack**: Connection tracking tool for iptables—kube-proxy uses this to track network connections for service load balancing
 - **ipset**: Efficiently manage sets of IP addresses in iptables rules—improves performance when you have many services
 
+### Configure System Settings for Container Networking
+
+**Why this is required**: By default, Linux does not forward packets between network interfaces. Worker nodes need to route traffic from pod networks (cnio0 bridge) to external networks (eth0). Without IP forwarding enabled, pods cannot reach the internet or communicate across nodes.
+
+**Understanding IP forwarding**: When a pod sends a packet to an external destination (e.g., 8.8.8.8), the packet arrives at the node's cnio0 bridge interface. The node must forward it to the eth0 interface (and vice versa for return traffic). The `net.ipv4.ip_forward` kernel parameter controls this behavior.
+
+Enable IP forwarding:
+
+```bash
+# Enable IP forwarding immediately
+sudo sysctl -w net.ipv4.ip_forward=1
+
+# Make it persistent across reboots
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+
+# Verify it's enabled (should show: net.ipv4.ip_forward = 1)
+sudo sysctl net.ipv4.ip_forward
+```
+
+**Security note**: IP forwarding is required for Kubernetes nodes but should only be enabled on systems that need to route traffic (like Kubernetes workers and routers).
+
 ### Download and Install Worker Binaries
 
 **Why this is required**: Worker nodes need a complete container runtime stack plus Kubernetes components. This is more complex than the control plane because workers actually run containers.
@@ -746,6 +767,13 @@ kubectl wait --for=condition=Ready pod -l app=test-nginx
 kubectl delete deployment test-nginx
 ```
 
+> **Note on Pod Networking**: At this point, pods can be scheduled and run on worker nodes, but **pod-to-pod communication across different nodes will NOT work yet**. This is expected! Cross-node pod networking requires configuring pod network routes in Azure, which is covered in [Chapter 09: Pod Network Routes](09-pod-network-routes.md). Until you complete chapter 09:
+> - Pods on the **same node** can communicate with each other
+> - Pods on **different nodes** cannot communicate (ping will fail with 100% packet loss)
+> - This is because both nodes currently use the same pod CIDR (10.200.0.0/16) and don't have Azure routes configured
+> 
+> After completing chapter 09, each node will have a unique pod subnet and Azure routes will direct traffic between nodes correctly.
+
 ## Understanding Worker Node Components
 
 **Why this matters**: Understanding how worker components interact helps you troubleshoot networking issues, debug pod failures, and optimize node performance. The container runtime stack has multiple layers, each with a specific responsibility.
@@ -1325,21 +1353,336 @@ eventRecordQPS: 5               # Event recording rate limit
   max_container_log_line_size = 16384
 ```
 
-### Resource Monitoring
+## Recommended Cluster Add-Ons
 
-Monitor worker node resources:
+At this point, your Kubernetes cluster has all the core components running. The following add-ons are recommended for production use but are not required to complete this tutorial:
+
+### Metrics Server (Optional)
+
+**Purpose**: Collects resource metrics (CPU, memory) from kubelets and exposes them via the Metrics API. Enables `kubectl top` commands and autoscaling features (HPA/VPA).
+
+**Why not included**: Metrics Server requires kube-proxy running on the control plane node to function properly (so the API server can reach the Metrics Server's ClusterIP service). This adds complexity beyond the scope of "the hard way" core components.
+
+**How to install**: See the [official Metrics Server documentation](https://github.com/kubernetes-sigs/metrics-server) for installation instructions. For lab environments, you'll need to use `--kubelet-insecure-tls` and ensure kube-proxy is running on all nodes including the control plane.
+
+### Other Recommended Add-Ons
+
+- **Ingress Controller**: NGINX Ingress, Traefik, or cloud provider ingress
+- **Storage Provisioner**: For dynamic persistent volume provisioning
+- **Monitoring**: Prometheus + Grafana stack
+- **Logging**: ELK/EFK stack or Loki
+- **Network Policy**: Calico or Cilium (for network security policies)
+
+## Deploy CoreDNS for Cluster DNS
+
+**Why this is required**: Kubernetes applications depend on DNS for service discovery and communication. Without CoreDNS:
+- Pods cannot resolve service names (e.g., `kubernetes.default.svc.cluster.local`)
+- Pods cannot resolve external domain names (e.g., `google.com`)
+- Applications using service names in connection strings will fail
+
+**What CoreDNS does**:
+- Resolves Kubernetes service names to ClusterIP addresses
+- Forwards external DNS queries to upstream DNS servers
+- Provides DNS-based service discovery across the cluster
+- Acts as the authoritative DNS server for the `.cluster.local` domain
+
+**Understanding the deployment**:
+- **ConfigMap**: Contains the CoreDNS configuration (Corefile)
+- **Deployment**: Runs CoreDNS pods (typically 2 replicas for HA)
+- **Service**: Exposes CoreDNS on 10.100.0.10:53 (the DNS IP configured in kubelet)
+- **ServiceAccount + RBAC**: Allows CoreDNS to query the Kubernetes API for service/endpoint information
+
+### Deploy CoreDNS
+
+Create the CoreDNS manifest:
 
 ```bash
-# Node resource usage
-kubectl top nodes
-
-# Pod resource usage
-kubectl top pods --all-namespaces
-
-# System resources
-free -h
-df -h
-iostat -x 1
+# From the jumpbox
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: coredns
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:coredns
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  - services
+  - pods
+  - namespaces
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:coredns
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:coredns
+subjects:
+- kind: ServiceAccount
+  name: coredns
+  namespace: kube-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+          lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+          pods insecure
+          fallthrough in-addr.arpa ip6.arpa
+          ttl 30
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf {
+          max_concurrent 1000
+        }
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coredns
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      k8s-app: kube-dns
+  template:
+    metadata:
+      labels:
+        k8s-app: kube-dns
+    spec:
+      priorityClassName: system-cluster-critical
+      serviceAccountName: coredns
+      tolerations:
+      - key: "CriticalAddonsOnly"
+        operator: "Exists"
+      nodeSelector:
+        kubernetes.io/os: linux
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: k8s-app
+                  operator: In
+                  values: ["kube-dns"]
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: coredns
+        image: coredns/coredns:1.11.1
+        imagePullPolicy: IfNotPresent
+        resources:
+          limits:
+            memory: 170Mi
+          requests:
+            cpu: 100m
+            memory: 70Mi
+        args: [ "-conf", "/etc/coredns/Corefile" ]
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/coredns
+          readOnly: true
+        ports:
+        - containerPort: 53
+          name: dns
+          protocol: UDP
+        - containerPort: 53
+          name: dns-tcp
+          protocol: TCP
+        - containerPort: 9153
+          name: metrics
+          protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - NET_BIND_SERVICE
+            drop:
+            - all
+          readOnlyRootFilesystem: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 60
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8181
+            scheme: HTTP
+      dnsPolicy: Default
+      volumes:
+      - name: config-volume
+        configMap:
+          name: coredns
+          items:
+          - key: Corefile
+            path: Corefile
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-dns
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns
+  annotations:
+    prometheus.io/port: "9153"
+    prometheus.io/scrape: "true"
+spec:
+  selector:
+    k8s-app: kube-dns
+  clusterIP: 10.100.0.10
+  ports:
+  - name: dns
+    port: 53
+    protocol: UDP
+  - name: dns-tcp
+    port: 53
+    protocol: TCP
+  - name: metrics
+    port: 9153
+    protocol: TCP
+EOF
 ```
+
+### Verify CoreDNS Deployment
+
+Wait for CoreDNS pods to be running:
+
+```bash
+# Watch CoreDNS pods starting up
+kubectl get pods -n kube-system -l k8s-app=kube-dns -w
+# Press Ctrl+C once both pods are Running
+
+# Verify deployment status
+kubectl get deployment -n kube-system coredns
+
+# Verify service endpoint
+kubectl get service -n kube-system kube-dns
+kubectl get endpoints -n kube-system kube-dns
+```
+
+**Expected output**: 2 CoreDNS pods running, service on 10.100.0.10, endpoints pointing to pod IPs.
+
+### Test DNS Resolution
+
+Test DNS from a pod:
+
+```bash
+# Create a test pod (if you don't already have one)
+kubectl run test-dns --image=busybox:1.28 --restart=Never --command -- sleep 3600
+
+# Wait for pod to be ready
+kubectl wait --for=condition=Ready pod/test-dns --timeout=60s
+
+# Test Kubernetes internal DNS (service discovery)
+echo "Testing Kubernetes service DNS:"
+kubectl exec test-dns -- nslookup kubernetes.default
+
+# Test external DNS resolution
+echo ""
+echo "Testing external DNS:"
+kubectl exec test-dns -- nslookup google.com
+
+# Clean up test pod
+kubectl delete pod test-dns
+```
+
+**Expected results**:
+- ✅ `kubernetes.default` resolves to 10.100.0.1 (Kubernetes API service)
+- ✅ `google.com` resolves to external IPs
+
+### Understanding the CoreDNS Configuration
+
+**Key Corefile directives**:
+- **errors**: Logs DNS query errors
+- **health**: HTTP health endpoint on :8080
+- **ready**: HTTP readiness endpoint on :8181
+- **kubernetes**: Enables Kubernetes service discovery for `cluster.local` domain
+  - `pods insecure`: Enables pod DNS records (hostname.namespace.pod.cluster.local)
+  - `fallthrough`: Passes unmatched queries to next plugin
+- **prometheus**: Exposes metrics on :9153
+- **forward**: Forwards external queries to upstream DNS (from /etc/resolv.conf)
+- **cache**: Caches DNS responses for 30 seconds (improves performance)
+- **loop**: Detects DNS loops to prevent infinite queries
+- **loadbalance**: Round-robin load balancing for multiple A/AAAA records
+
+### Troubleshooting CoreDNS
+
+If DNS resolution fails:
+
+```bash
+# Check CoreDNS pod logs
+kubectl logs -n kube-system -l k8s-app=kube-dns
+
+# Verify service endpoints
+kubectl get endpoints -n kube-system kube-dns
+
+# Check if pods can reach the DNS service
+kubectl run test-reach-dns --image=busybox:1.28 --restart=Never --rm -it -- nc -zv 10.100.0.10 53
+
+# Verify pod DNS configuration
+kubectl run test-dns-config --image=busybox:1.28 --restart=Never --rm -it -- cat /etc/resolv.conf
+```
+
+**Common issues**:
+- **Pods not resolving**: Check that service ClusterIP is 10.100.0.10 (matches kubelet config)
+- **External DNS fails**: Check CoreDNS can reach upstream DNS servers
+- **Slow DNS**: Check cache settings and network latency
+
+### DNS Performance Considerations
+
+**Production recommendations**:
+- **Replicas**: Run 2+ CoreDNS replicas for high availability
+- **Resources**: Adjust CPU/memory based on query load
+- **Cache TTL**: Balance between freshness and performance
+- **Autoscaling**: Use HPA to scale CoreDNS based on query rate
+- **Affinity**: Spread CoreDNS pods across nodes (already configured above)
 
 Next: [Configuring kubectl for Remote Access](08-configuring-kubectl.md)

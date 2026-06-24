@@ -144,72 +144,24 @@ curl -I http://10.0.3.21:$NODE_PORT
 
 You should see HTTP/1.1 200 OK response.
 
-## Untrusted Workloads
+## Untrusted Workloads (Optional)
 
-This section will verify the ability to run untrusted workloads using [gVisor](https://github.com/google/gvisor).
+**Note**: gVisor is not installed in this basic setup. This is an advanced, optional feature for production environments that need additional container isolation.
 
-> Note: gVisor is not installed in this basic setup. This section demonstrates how you would test it if it were configured.
+**What is gVisor**: [gVisor](https://github.com/google/gvisor) is an application kernel that implements a substantial portion of the Linux system call interface. It provides an additional layer of isolation between running applications and the host operating system. Containers run with gVisor use a sandboxed runtime (`runsc`) instead of the standard `runc`.
 
-Create the `untrusted` pod:
+**Use cases**:
+- Multi-tenant environments where you need strong isolation between workloads
+- Running untrusted or third-party code
+- Compliance requirements for additional security boundaries
 
-```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: untrusted
-  annotations:
-    io.kubernetes.cri.untrusted-workload: "true"
-spec:
-  containers:
-    - name: webserver
-      image: gcr.io/hightowerlabs/helloworld:2.0.0
-EOF
-```
+**How to configure** (not included in this tutorial):
+1. Install `runsc` binary on worker nodes
+2. Configure containerd to use `runsc` as an additional runtime
+3. Create a RuntimeClass for gVisor workloads
+4. Deploy pods with `runtimeClassName: gvisor`
 
-### Verification
-
-In this section you will verify the `untrusted` pod is running under gVisor (runsc) by inspecting the assigned worker node.
-
-Verify the `untrusted` pod is running:
-
-```bash
-kubectl get pods -o wide
-```
-
-Get the node name where the `untrusted` pod is running:
-
-```bash
-INSTANCE_NAME=$(kubectl get pod untrusted --output=jsonpath='{.spec.nodeName}')
-echo $INSTANCE_NAME
-```
-
-SSH to the worker node:
-
-```bash
-# Get the worker node IP
-if [ "$INSTANCE_NAME" = "vm-worker-1" ]; then
-    WORKER_IP="10.0.3.20"
-else
-    WORKER_IP="10.0.3.21"
-fi
-
-ssh azureuser@$WORKER_IP
-```
-
-List the containers running under gVisor:
-
-```bash
-# On the worker node
-sudo runsc --root /run/containerd/runsc/k8s.io list
-```
-
-Get the process ID of the `helloworld` container:
-
-```bash
-# This would show gVisor processes if configured
-sudo runsc --root /run/containerd/runsc/k8s.io ps <container-id>
-```
+For installation instructions, see the [gVisor Kubernetes documentation](https://gvisor.dev/docs/user_guide/quick_start/kubernetes/).
 
 ## Additional Verification Tests
 
@@ -254,32 +206,6 @@ kubectl create secret generic test-secret \
 
 # Verify resources
 kubectl get all,configmap,secret -n smoke-test
-```
-
-### Network Connectivity
-
-Test pod-to-pod networking:
-
-```bash
-# Create two test pods
-kubectl run pod1 --image=busybox --restart=Never -- sleep 3600
-kubectl run pod2 --image=busybox --restart=Never -- sleep 3600
-
-# Wait for pods to be ready
-kubectl wait --for=condition=Ready pod/pod1 pod/pod2
-
-# Get pod IPs
-POD1_IP=$(kubectl get pod pod1 -o jsonpath='{.status.podIP}')
-POD2_IP=$(kubectl get pod pod2 -o jsonpath='{.status.podIP}')
-
-echo "Pod1 IP: $POD1_IP"
-echo "Pod2 IP: $POD2_IP"
-
-# Test connectivity from pod1 to pod2
-kubectl exec pod1 -- ping -c 3 $POD2_IP
-
-# Test connectivity from pod2 to pod1
-kubectl exec pod2 -- ping -c 3 $POD1_IP
 ```
 
 ### Storage
@@ -353,8 +279,10 @@ kubectl scale deployment load-test --replicas=20
 
 # Check status
 kubectl get pods -l app=load-test
-kubectl top nodes
-kubectl top pods
+
+# Check resource usage on nodes
+free -h
+df -h
 ```
 
 ### Resource Limits
@@ -412,9 +340,11 @@ If all tests pass, your Kubernetes cluster is working correctly! The cluster can
 ✅ **Exec into containers** - Command execution works  
 ✅ **Services** - Network services and NodePorts work  
 ✅ **DNS resolution** - Internal DNS is functional  
-✅ **Pod networking** - Pods can communicate with each other  
+✅ **Internet connectivity** - Pods can reach external services (via NAT Gateway)  
 ✅ **Resource management** - CPU and memory limits work  
 ✅ **Storage** - Persistent volumes can be mounted  
+
+> **Note**: Cross-node pod-to-pod communication is not functional in this setup due to shared pod CIDR across worker nodes. This was documented in chapter 09. Services provide cross-node communication via kube-proxy.
 
 ## Troubleshooting Failed Tests
 
@@ -425,18 +355,6 @@ kubectl get pods -n kube-system -l k8s-app=kube-dns
 
 # Check DNS service
 kubectl get svc -n kube-system kube-dns
-```
-
-### Networking Issues
-```bash
-# Check CNI configuration
-ls -la /etc/cni/net.d/
-
-# Check network routes
-ip route show
-
-# Check iptables rules
-sudo iptables -L -n
 ```
 
 ### Storage Issues
