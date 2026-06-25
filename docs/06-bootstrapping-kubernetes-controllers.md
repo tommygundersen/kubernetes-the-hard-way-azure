@@ -334,7 +334,7 @@ cd ~/kubernetes-the-hard-way-azure/certificates
 # Set up kubectl configuration
 kubectl config set-cluster kubernetes-the-hard-way --certificate-authority=ca.pem --embed-certs=true --server=https://10.0.3.10:6443
 
-kubectl config set-credentials admin --client-certificate=admin.pem --client-key=admin-key.pem
+kubectl config set-credentials admin --client-certificate=admin.pem --client-key=admin-key.pem --embed-certs=true
 
 kubectl config set-context kubernetes-the-hard-way --cluster=kubernetes-the-hard-way --user=admin
 
@@ -385,6 +385,36 @@ subjects:
     kind: User
     name: kubernetes
 EOF
+```
+
+**Why this is required**: The ClusterRole defines permissions for accessing kubelet APIs (metrics, logs, stats). The ClusterRoleBinding grants these permissions to the "kubernetes" user (the API server's client certificate CN).
+
+### Grant API Server Full Kubelet API Access
+
+The above ClusterRole grants specific permissions, but `kubectl exec`, `kubectl logs`, and `kubectl port-forward` require additional permissions. Grant the API server full kubelet API admin access:
+
+```bash
+kubectl create clusterrolebinding apiserver-kubelet-admin \
+  --clusterrole=system:kubelet-api-admin \
+  --user=kubernetes
+```
+
+**What this does**: The `system:kubelet-api-admin` is a built-in ClusterRole that grants full access to kubelet APIs, including:
+- Creating exec sessions (for `kubectl exec`)
+- Streaming logs (for `kubectl logs`)
+- Port forwarding (for `kubectl port-forward`)
+- Attaching to containers
+
+Without this binding, you'll get "Forbidden" errors when trying to exec into pods or retrieve logs.
+
+**Verification**: Test that the binding works:
+
+```bash
+# This should work without errors after the binding
+kubectl run test-pod --image=busybox --restart=Never -- sleep 3600
+kubectl wait --for=condition=Ready pod/test-pod --timeout=60s
+kubectl exec test-pod -- echo "Success"
+kubectl delete pod test-pod
 ```
 
 ## Understanding the Control Plane Components

@@ -29,7 +29,8 @@ kubectl config set-cluster kubernetes-the-hard-way \
 
 kubectl config set-credentials admin \
   --client-certificate=admin.pem \
-  --client-key=admin-key.pem
+  --client-key=admin-key.pem \
+  --embed-certs=true
 
 kubectl config set-context kubernetes-the-hard-way \
   --cluster=kubernetes-the-hard-way \
@@ -37,6 +38,8 @@ kubectl config set-context kubernetes-the-hard-way \
 
 kubectl config use-context kubernetes-the-hard-way
 ```
+
+**Important**: The `--embed-certs=true` flag embeds the certificate content directly in the kubeconfig file, making it portable and working from any directory. Without this flag, kubectl uses file paths which can cause issues when running commands from different directories.
 
 ## Verification
 
